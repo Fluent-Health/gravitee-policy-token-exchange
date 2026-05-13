@@ -15,6 +15,8 @@
         <gravitee-policy-api.version>1.11.0</gravitee-policy-api.version>
         <gravitee-gateway-api.version>4.0.1</gravitee-gateway-api.version>
         <gravitee-common.version>4.2.0</gravitee-common.version>
+        <gravitee-resource-api.version>1.1.0</gravitee-resource-api.version>
+        <gravitee-resource-cache-provider-api.version>1.1.0</gravitee-resource-cache-provider-api.version>
         <jackson-databind.version>2.17.1</jackson-databind.version>
         <junit-jupiter.version>5.10.2</junit-jupiter.version>
         <mockito.version>5.11.0</mockito.version>
@@ -39,6 +41,18 @@
             <groupId>io.gravitee.common</groupId>
             <artifactId>gravitee-common</artifactId>
             <version>${gravitee-common.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.gravitee.resource</groupId>
+            <artifactId>gravitee-resource-api</artifactId>
+            <version>${gravitee-resource-api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.gravitee.resource</groupId>
+            <artifactId>gravitee-resource-cache-provider-api</artifactId>
+            <version>${gravitee-resource-cache-provider-api.version}</version>
             <scope>provided</scope>
         </dependency>
 
@@ -69,6 +83,12 @@
             <version>3.25.3</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock</artifactId>
+            <version>${wiremock.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -80,6 +100,11 @@
                 <configuration>
                     <release>${maven.compiler.release}</release>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
             </plugin>
         </plugins>
     </build>
