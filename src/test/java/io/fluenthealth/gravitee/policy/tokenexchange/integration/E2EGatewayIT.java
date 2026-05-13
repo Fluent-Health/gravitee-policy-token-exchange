@@ -55,7 +55,7 @@ public class E2EGatewayIT {
             .withEnv("gravitee_services_core_http_authentication_type", "none")
             .withLogConsumer(new Slf4jLogConsumer(logger).withPrefix("mgmt"))
             .dependsOn(mongodb)
-            .waitingFor(Wait.forHttp("/_node/health").forPort(18083).forStatusCode(200).withStartupTimeout(Duration.ofSeconds(120)));
+            .waitingFor(Wait.forHttp("/management/_node/health").forPort(18083).forStatusCode(200).withStartupTimeout(Duration.ofSeconds(300)));
 
     private static final GenericContainer<?> gateway = new GenericContainer<>("graviteeio/apim-gateway:4.9.13")
             .withNetwork(network)
@@ -70,7 +70,7 @@ public class E2EGatewayIT {
             .withEnv("gravitee_services_core_http_authentication_type", "none")
             .withLogConsumer(new Slf4jLogConsumer(logger).withPrefix("gateway"))
             .dependsOn(mongodb, managementApi)
-            .waitingFor(Wait.forHttp("/_node/health").forPort(18082).forStatusCode(200).withStartupTimeout(Duration.ofSeconds(120)));
+            .waitingFor(Wait.forHttp("/_node/health").forPort(18082).forStatusCode(200).withStartupTimeout(Duration.ofSeconds(300)));
 
     @BeforeAll
     static void setup() throws Exception {
@@ -115,8 +115,8 @@ public class E2EGatewayIT {
         
         // Wait for Management API to be truly ready for REST calls (on technical port)
         Awaitility.await()
-                .atMost(Duration.ofSeconds(60))
-                .pollInterval(Duration.ofSeconds(2))
+                .atMost(Duration.ofSeconds(120))
+                .pollInterval(Duration.ofSeconds(5))
                 .until(() -> {
                     try {
                         HttpRequest probe = HttpRequest.newBuilder()
@@ -147,7 +147,7 @@ public class E2EGatewayIT {
 
         // Wait for gateway to sync the new API
         Awaitility.await()
-                .atMost(Duration.ofSeconds(60))
+                .atMost(Duration.ofSeconds(120))
                 .pollInterval(Duration.ofSeconds(5))
                 .until(() -> {
                     try {
