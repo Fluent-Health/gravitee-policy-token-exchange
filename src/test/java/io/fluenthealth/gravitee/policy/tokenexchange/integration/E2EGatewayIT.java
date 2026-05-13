@@ -6,9 +6,11 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.utility.MountableFile;
 
 import java.net.URI;
@@ -29,12 +31,11 @@ public class E2EGatewayIT {
 
     private static final Logger logger = LoggerFactory.getLogger(E2EGatewayIT.class);
     private static final Network network = Network.newNetwork();
+    private static final String MONGO_URI = "mongodb://mongodb:27017/gravitee";
 
-    private static final GenericContainer<?> mongodb = new GenericContainer<>("mongo:7.0")
+    private static final MongoDBContainer mongodb = new MongoDBContainer("mongo:7.0")
             .withNetwork(network)
-            .withNetworkAliases("mongodb")
-            .withExposedPorts(27017)
-            .waitingFor(Wait.forListeningPort());
+            .withNetworkAliases("mongodb");
 
     private static final GenericContainer<?> wiremock = new GenericContainer<>("wiremock/wiremock:3.5.4")
             .withNetwork(network)
@@ -46,24 +47,30 @@ public class E2EGatewayIT {
     private static final GenericContainer<?> managementApi = new GenericContainer<>("graviteeio/apim-management-api:4.9.13")
             .withNetwork(network)
             .withNetworkAliases("management")
-            .withExposedPorts(8083)
-            .withEnv("gravitee_management_mongodb_uri", "mongodb://mongodb:27017/gravitee")
+            .withExposedPorts(8083, 18083)
+            .withEnv("gravitee_management_mongodb_uri", MONGO_URI)
             .withEnv("gravitee_analytics_type", "none")
+            .withEnv("gravitee_services_core_http_enabled", "true")
+            .withEnv("gravitee_services_core_http_port", "18083")
+            .withEnv("gravitee_services_core_http_authentication_type", "none")
             .withLogConsumer(new Slf4jLogConsumer(logger).withPrefix("mgmt"))
             .dependsOn(mongodb)
-            .waitingFor(Wait.forListeningPort().withStartupTimeout(Duration.ofSeconds(180)));
+            .waitingFor(Wait.forHttp("/_node/health").forPort(18083).forStatusCode(200).withStartupTimeout(Duration.ofSeconds(120)));
 
     private static final GenericContainer<?> gateway = new GenericContainer<>("graviteeio/apim-gateway:4.9.13")
             .withNetwork(network)
             .withNetworkAliases("gateway")
-            .withExposedPorts(8082)
-            .withEnv("gravitee_management_mongodb_uri", "mongodb://mongodb:27017/gravitee")
+            .withExposedPorts(8082, 18082)
+            .withEnv("gravitee_management_mongodb_uri", MONGO_URI)
             .withEnv("gravitee_analytics_type", "none")
             .withEnv("gravitee_plugins_path_0", "/opt/graviteeio-gateway/plugins")
             .withEnv("gravitee_plugins_path_1", "/opt/graviteeio-gateway/plugins-ext")
+            .withEnv("gravitee_services_core_http_enabled", "true")
+            .withEnv("gravitee_services_core_http_port", "18082")
+            .withEnv("gravitee_services_core_http_authentication_type", "none")
             .withLogConsumer(new Slf4jLogConsumer(logger).withPrefix("gateway"))
             .dependsOn(mongodb, managementApi)
-            .waitingFor(Wait.forListeningPort().withStartupTimeout(Duration.ofSeconds(180)));
+            .waitingFor(Wait.forHttp("/_node/health").forPort(18082).forStatusCode(200).withStartupTimeout(Duration.ofSeconds(120)));
 
     @BeforeAll
     static void setup() throws Exception {
@@ -106,14 +113,14 @@ public class E2EGatewayIT {
         // Deploy API
         ManagementApiHelper mgmtHelper = new ManagementApiHelper(managementApi.getHost(), managementApi.getMappedPort(8083));
         
-        // Wait for Management API to be truly ready for REST calls
+        // Wait for Management API to be truly ready for REST calls (on technical port)
         Awaitility.await()
                 .atMost(Duration.ofSeconds(60))
                 .pollInterval(Duration.ofSeconds(2))
                 .until(() -> {
                     try {
                         HttpRequest probe = HttpRequest.newBuilder()
-                                .uri(URI.create("http://" + managementApi.getHost() + ":" + managementApi.getMappedPort(8083) + "/management/_node/health"))
+                                .uri(URI.create("http://" + managementApi.getHost() + ":" + managementApi.getMappedPort(18083) + "/_node/health"))
                                 .GET().build();
                         return HttpClient.newHttpClient().send(probe, HttpResponse.BodyHandlers.discarding()).statusCode() == 200;
                     } catch (Exception e) {
