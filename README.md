@@ -9,8 +9,8 @@ A project by [Fluent Health](https://github.com/Fluent-Health).
 ## Key Features
 
 - **Unified Flow**: Handles cache lookup, asynchronous token request, cache update, and header injection.
-- **RFC 8693 Support**: Specialized for Medplum-style token exchange.
-- **Refresh Token Support**: Configurable for Zoho-style refresh flows.
+- **RFC 8693 Support**: Specialized for generic OAuth2 Token Exchange.
+- **Refresh Token Support**: Configurable for standard OAuth2 refresh flows.
 - **Asynchronous**: Built on Vert.x 4.x `HttpClient` for non-blocking gateway execution.
 - **Trace Context**: Propagates W3C `traceparent` and `X-Request-ID` headers to the token provider.
 
@@ -32,13 +32,13 @@ mvn verify
 
 The policy is configured via the Gravitee Management Console or API. Below are examples using the Gravitee Terraform APIM provider.
 
-### Medplum (RFC 8693 Token Exchange)
+### OAuth2 Token Exchange (RFC 8693)
 
 This example requires a preceding **JWT** security policy to populate the `jwt.token` attribute and uses a **Shared Redis Cache** resource.
 
 ```hcl
-resource "gravitee_api_v4" "medplum_api" {
-  name = "Medplum FHIR API"
+resource "gravitee_api_v4" "exchange_api" {
+  name = "Token Exchange API"
   # ... other API config ...
 
   # 1. Define the Cache Resource
@@ -60,13 +60,13 @@ resource "gravitee_api_v4" "medplum_api" {
       name = "Token Exchange Flow"
       selectors = [{
         type = "HTTP"
-        path = "/fhir"
+        path = "/secure"
       }]
       request = [{
         policy = "oauth2-token-orchestrator"
         configuration = jsonencode({
           cacheResource = "shared-redis"
-          tokenEndpoint = "https://api.medplum.com/oauth2/token"
+          tokenEndpoint = "https://idp.example.com/oauth2/token"
           grantType     = "urn:ietf:params:oauth:grant-type:token-exchange"
           clientId      = "YOUR_CLIENT_ID"
           parameters = {
@@ -80,13 +80,13 @@ resource "gravitee_api_v4" "medplum_api" {
 }
 ```
 
-### Zoho (OAuth2 Refresh Token)
+### OAuth2 Refresh Token
 
 This example handles the automated refresh and caching of an access token using a long-lived refresh token stored in API properties.
 
 ```hcl
-resource "gravitee_api_v4" "zoho_api" {
-  name = "Zoho Desk API"
+resource "gravitee_api_v4" "refresh_api" {
+  name = "Token Refresh API"
   # ... other API config ...
 
   resources = [{
@@ -103,14 +103,14 @@ resource "gravitee_api_v4" "zoho_api" {
       policy = "oauth2-token-orchestrator"
       configuration = jsonencode({
         cacheResource = "shared-redis"
-        tokenEndpoint = "https://accounts.zoho.com/oauth/v2/token"
+        tokenEndpoint = "https://oauth.example.com/token"
         grantType     = "refresh_token"
-        clientId      = "{#api.properties['zoho-client-id']}"
-        clientSecret  = "{#api.properties['zoho-client-secret']}"
+        clientId      = "{#api.properties['client-id']}"
+        clientSecret  = "{#api.properties['client-secret']}"
         parameters = {
-          refresh_token = "{#api.properties['zoho-refresh-token']}"
+          refresh_token = "{#api.properties['refresh-token']}"
         }
-        cacheKey   = "zoho-global-token"
+        cacheKey   = "provider-global-token"
         defaultTtl = 3500
       })
     }]

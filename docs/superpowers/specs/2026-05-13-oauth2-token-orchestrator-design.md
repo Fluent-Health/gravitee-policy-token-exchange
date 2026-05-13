@@ -8,9 +8,10 @@
 
 ## Purpose
 
-A Gravitee APIM policy plugin that encapsulates the "Cache-Check -> Token Request -> Cache-Store -> Header Injection" lifecycle. It is designed to replace fragmented multi-policy flows (Data Cache + HTTP Callout + Transform Headers) currently used for Medplum RFC 8693 token exchange and Zoho OAuth2 refresh token flows.
+A Gravitee APIM policy plugin that encapsulates the "Cache-Check -> Token Request -> Cache Store -> Header Injection" lifecycle. It is designed to replace fragmented multi-policy flows (Data Cache + HTTP Callout + Transform Headers) currently used for various OAuth2 token exchange and refresh flows.
 
 By consolidating these steps into a single Java execution unit, we improve performance (reduced EL evaluation overhead), simplify API definitions, and ensure consistent error handling and trace context propagation.
+
 
 ---
 
@@ -84,7 +85,7 @@ The policy is highly configurable via Expression Language (EL) to support divers
 
 ### 1. Unit Tests (JUnit 5 + Mockito)
 *   Validate `cacheKey` resolution logic.
-*   Verify body construction for Medplum (RFC 8693) and Zoho (refresh_token) scenarios.
+*   Verify body construction for RFC 8693 and standard refresh token scenarios.
 *   Assert `Authorization` header injection.
 
 ### 2. Integration Tests (WireMock)
