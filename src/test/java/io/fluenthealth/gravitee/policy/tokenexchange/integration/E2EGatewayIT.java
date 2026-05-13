@@ -1,6 +1,6 @@
 package io.fluenthealth.gravitee.policy.tokenexchange.integration;
 
-import com.github.tomakehurst.wiremock.client.WireMock;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
@@ -9,8 +9,6 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.MountableFile;
 
 import java.net.URI;
@@ -20,18 +18,24 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.Optional;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import org.awaitility.Awaitility;
 
-@Testcontainers
 public class E2EGatewayIT {
 
     private static final Logger logger = LoggerFactory.getLogger(E2EGatewayIT.class);
     private static final Network network = Network.newNetwork();
 
-    @Container
+    private static final GenericContainer<?> mongodb = new GenericContainer<>("mongo:7.0")
+            .withNetwork(network)
+            .withNetworkAliases("mongodb")
+            .withExposedPorts(27017)
+            .waitingFor(Wait.forListeningPort());
+
     private static final GenericContainer<?> wiremock = new GenericContainer<>("wiremock/wiremock:3.5.4")
             .withNetwork(network)
             .withNetworkAliases("wiremock")
@@ -39,14 +43,27 @@ public class E2EGatewayIT {
             .withLogConsumer(new Slf4jLogConsumer(logger).withPrefix("wiremock"))
             .waitingFor(Wait.forHttp("/__admin").forStatusCode(200));
 
-    @Container
-    private static final GenericContainer<?> gateway = new GenericContainer<>("graviteeio/apim-gateway:4.0.1")
+    private static final GenericContainer<?> managementApi = new GenericContainer<>("graviteeio/apim-management-api:4.9.13")
+            .withNetwork(network)
+            .withNetworkAliases("management")
+            .withExposedPorts(8083)
+            .withEnv("gravitee_management_mongodb_uri", "mongodb://mongodb:27017/gravitee")
+            .withEnv("gravitee_analytics_type", "none")
+            .withLogConsumer(new Slf4jLogConsumer(logger).withPrefix("mgmt"))
+            .dependsOn(mongodb)
+            .waitingFor(Wait.forListeningPort().withStartupTimeout(Duration.ofSeconds(180)));
+
+    private static final GenericContainer<?> gateway = new GenericContainer<>("graviteeio/apim-gateway:4.9.13")
             .withNetwork(network)
             .withNetworkAliases("gateway")
             .withExposedPorts(8082)
-            .withEnv("gravitee_services_localregistry_path", "/opt/graviteeio-gateway/apis")
+            .withEnv("gravitee_management_mongodb_uri", "mongodb://mongodb:27017/gravitee")
+            .withEnv("gravitee_analytics_type", "none")
+            .withEnv("gravitee_plugins_path_0", "/opt/graviteeio-gateway/plugins")
+            .withEnv("gravitee_plugins_path_1", "/opt/graviteeio-gateway/plugins-ext")
             .withLogConsumer(new Slf4jLogConsumer(logger).withPrefix("gateway"))
-            .waitingFor(Wait.forHttp("/").forPort(8082).forStatusCode(404));
+            .dependsOn(mongodb, managementApi)
+            .waitingFor(Wait.forListeningPort().withStartupTimeout(Duration.ofSeconds(180)));
 
     @BeforeAll
     static void setup() throws Exception {
@@ -60,23 +77,19 @@ public class E2EGatewayIT {
             throw new RuntimeException("Plugin ZIP not found in target/. Run 'mvn package' first.");
         }
 
+        mongodb.start();
+        wiremock.start();
+        managementApi.start();
+
         gateway.withCopyFileToContainer(
                 MountableFile.forHostPath(pluginZip.get()),
                 "/opt/graviteeio-gateway/plugins-ext/" + pluginZip.get().getFileName().toString()
         );
 
-        gateway.withCopyFileToContainer(
-                MountableFile.forHostPath("src/test/resources/gateway/gravitee.yml"),
-                "/opt/graviteeio-gateway/config/gravitee.yml"
-        );
+        gateway.start();
 
-        gateway.withCopyFileToContainer(
-                MountableFile.forHostPath("src/test/resources/gateway/apis/test-api.json"),
-                "/opt/graviteeio-gateway/apis/test-api.json"
-        );
-
-        // Configure WireMock stubs using the Java client
-        WireMock.configureFor(wiremock.getHost(), wiremock.getMappedPort(8080));
+        // Configure WireMock stubs
+        com.github.tomakehurst.wiremock.client.WireMock.configureFor(wiremock.getHost(), wiremock.getMappedPort(8080));
 
         stubFor(post(urlEqualTo("/token"))
                 .willReturn(aResponse()
@@ -89,12 +102,54 @@ public class E2EGatewayIT {
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody("{\"status\":\"ok\"}")));
+
+        // Deploy API
+        ManagementApiHelper mgmtHelper = new ManagementApiHelper(managementApi.getHost(), managementApi.getMappedPort(8083));
+        
+        // Wait for Management API to be truly ready for REST calls
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(60))
+                .pollInterval(Duration.ofSeconds(2))
+                .until(() -> {
+                    try {
+                        HttpRequest probe = HttpRequest.newBuilder()
+                                .uri(URI.create("http://" + managementApi.getHost() + ":" + managementApi.getMappedPort(8083) + "/management/_node/health"))
+                                .GET().build();
+                        return HttpClient.newHttpClient().send(probe, HttpResponse.BodyHandlers.discarding()).statusCode() == 200;
+                    } catch (Exception e) {
+                        return false;
+                    }
+                });
+
+        mgmtHelper.createAndDeployApi("E2E Test API", "/test", "http://wiremock:8080/backend", "http://wiremock:8080/token");
+    }
+
+    @AfterAll
+    static void tearDown() {
+        if (gateway != null) gateway.stop();
+        if (managementApi != null) managementApi.stop();
+        if (wiremock != null) wiremock.stop();
+        if (mongodb != null) mongodb.stop();
+        network.close();
     }
 
     @Test
     void shouldExchangeTokenAndForwardToBackend() throws Exception {
         HttpClient client = HttpClient.newHttpClient();
         String gatewayUrl = "http://" + gateway.getHost() + ":" + gateway.getMappedPort(8082) + "/test";
+
+        // Wait for gateway to sync the new API
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(60))
+                .pollInterval(Duration.ofSeconds(5))
+                .until(() -> {
+                    try {
+                        HttpRequest probe = HttpRequest.newBuilder().uri(URI.create(gatewayUrl)).GET().build();
+                        return client.send(probe, HttpResponse.BodyHandlers.discarding()).statusCode() != 404;
+                    } catch (Exception e) {
+                        return false;
+                    }
+                });
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(gatewayUrl))

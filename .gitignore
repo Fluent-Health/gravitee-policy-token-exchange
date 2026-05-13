@@ -1,1 +1,13 @@
 target/
+.idea/
+*.iml
+.DS_Store
+
+# Credentials — never commit
+.env
+*.pem
+*.key
+*.p12
+*.pfx
+service-account*.json
+*-sa-key.json

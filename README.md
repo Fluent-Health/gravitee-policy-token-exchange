@@ -1,0 +1,51 @@
+# Gravitee Policy OAuth2 Token Orchestrator
+
+A Gravitee APIM policy plugin that orchestrates the "Cache -> Token Request -> Cache Store -> Header Injection" lifecycle for RFC 8693 (Token Exchange) and standard OAuth2 refresh token flows.
+
+By consolidating these steps into a single execution unit, it improves performance, simplifies API definitions, and ensures consistent error handling and trace context propagation.
+
+A project by [Fluent Health](https://github.com/Fluent-Health).
+
+## Key Features
+
+- **Unified Flow**: Handles cache lookup, asynchronous token request, cache update, and header injection.
+- **RFC 8693 Support**: Specialized for Medplum-style token exchange.
+- **Refresh Token Support**: Configurable for Zoho-style refresh flows.
+- **Asynchronous**: Built on Vert.x 4.x `HttpClient` for non-blocking gateway execution.
+- **Trace Context**: Propagates W3C `traceparent` and `X-Request-ID` headers to the token provider.
+
+## Development
+
+Prerequisites: `asdf`, Docker.
+
+```bash
+mvn clean install
+```
+
+To run the full end-to-end integration tests (requires Docker):
+
+```bash
+mvn verify
+```
+
+## Configuration
+
+The policy is configured via the Gravitee Management Console or API.
+
+### Required Fields
+- `cacheResource`: Name of the Gravitee Cache Resource to use.
+- `tokenEndpoint`: The full URL to the OAuth2 provider token endpoint.
+- `grantType`: The OAuth2 `grant_type` (e.g., `urn:ietf:params:oauth:grant-type:token-exchange`).
+
+### Optional Fields
+- `clientId`, `clientSecret`
+- `cacheKey`: Expression for the unique cache key (Default: `{#context.attributes['jwt.claims']['sub']}`).
+- `parameters`: Map of additional body parameters (Values support EL).
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
