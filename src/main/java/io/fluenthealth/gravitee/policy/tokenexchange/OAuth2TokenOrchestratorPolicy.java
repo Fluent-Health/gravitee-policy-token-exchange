@@ -48,10 +48,7 @@ public class OAuth2TokenOrchestratorPolicy {
 
         var cachedToken = cache.get(cacheKey);
         if (cachedToken != null) {
-            Object finalToken = cachedToken;
-            if (cachedToken instanceof io.gravitee.resource.cache.api.Element element) {
-                finalToken = element.value();
-            }
+            var finalToken = (cachedToken instanceof Element element) ? element.value() : cachedToken;
             request.headers().set("Authorization", "Bearer " + finalToken);
             policyChain.doNext(request, response);
             return;
