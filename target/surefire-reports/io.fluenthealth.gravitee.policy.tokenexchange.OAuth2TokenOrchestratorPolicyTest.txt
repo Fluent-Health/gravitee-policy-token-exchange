@@ -1,4 +1,0 @@
--------------------------------------------------------------------------------
-Test set: io.fluenthealth.gravitee.policy.tokenexchange.OAuth2TokenOrchestratorPolicyTest
--------------------------------------------------------------------------------
-Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.360 s -- in io.fluenthealth.gravitee.policy.tokenexchange.OAuth2TokenOrchestratorPolicyTest
