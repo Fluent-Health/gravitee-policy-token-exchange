@@ -1,0 +1,10 @@
+node:
+  type: gateway
+
+services:
+  localregistry:
+    enabled: true
+    path: /opt/graviteeio-gateway/apis
+
+  sync:
+    enabled: false
