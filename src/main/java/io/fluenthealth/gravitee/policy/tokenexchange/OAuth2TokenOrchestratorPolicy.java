@@ -37,21 +37,22 @@ public class OAuth2TokenOrchestratorPolicy {
 
     @OnRequest
     public void onRequest(Request request, Response response, ExecutionContext context, PolicyChain policyChain) {
-        CacheResource cacheResource = getCacheResource(context);
+        var cacheResource = getCacheResource(context);
         if (cacheResource == null) {
             policyChain.failWith(PolicyResult.failure(500, "Cache resource [" + configuration.getCacheResource() + "] not found"));
             return;
         }
 
-        Cache cache = cacheResource.getCache(context);
-        String cacheKey = context.getTemplateEngine().getValue(configuration.getCacheKey(), String.class);
+        var cache = cacheResource.getCache(context);
+        var cacheKey = context.getTemplateEngine().getValue(configuration.getCacheKey(), String.class);
 
-        Object cachedToken = cache.get(cacheKey);
+        var cachedToken = cache.get(cacheKey);
         if (cachedToken != null) {
+            Object finalToken = cachedToken;
             if (cachedToken instanceof io.gravitee.resource.cache.api.Element element) {
-                cachedToken = element.value();
+                finalToken = element.value();
             }
-            request.headers().set("Authorization", "Bearer " + cachedToken);
+            request.headers().set("Authorization", "Bearer " + finalToken);
             policyChain.doNext(request, response);
             return;
         }
@@ -61,17 +62,17 @@ public class OAuth2TokenOrchestratorPolicy {
     }
 
     private void doExchange(Request request, Response response, ExecutionContext context, PolicyChain policyChain, Cache cache, String cacheKey) {
-        HttpClient httpClient = context.getComponent(HttpClient.class);
-        String tokenEndpoint = context.getTemplateEngine().getValue(configuration.getTokenEndpoint(), String.class);
+        var httpClient = context.getComponent(HttpClient.class);
+        var tokenEndpoint = context.getTemplateEngine().getValue(configuration.getTokenEndpoint(), String.class);
         
-        String body = buildFormBody(context);
+        var body = buildFormBody(context);
 
         try {
-            URL url = new URL(tokenEndpoint);
-            boolean secure = "https".equalsIgnoreCase(url.getProtocol());
-            int port = url.getPort() != -1 ? url.getPort() : (secure ? 443 : 80);
+            var url = new URL(tokenEndpoint);
+            var secure = "https".equalsIgnoreCase(url.getProtocol());
+            var port = url.getPort() != -1 ? url.getPort() : (secure ? 443 : 80);
 
-            RequestOptions options = new RequestOptions()
+            var options = new RequestOptions()
                 .setMethod(HttpMethod.POST)
                 .setHost(url.getHost())
                 .setPort(port)
@@ -88,9 +89,9 @@ public class OAuth2TokenOrchestratorPolicy {
                     req.putHeader("Content-Length", String.valueOf(body.length()));
                     
                     // Propagate trace context
-                    String traceparent = request.headers().getFirst("traceparent");
+                    var traceparent = request.headers().getFirst("traceparent");
                     if (traceparent != null) req.putHeader("traceparent", traceparent);
-                    String requestId = request.headers().getFirst("X-Request-ID");
+                    var requestId = request.headers().getFirst("X-Request-ID");
                     if (requestId != null) req.putHeader("X-Request-ID", requestId);
 
                     req.send(body)
@@ -102,9 +103,9 @@ public class OAuth2TokenOrchestratorPolicy {
                             if (res.statusCode() >= 200 && res.statusCode() < 300) {
                                 res.body().onSuccess(buf -> {
                                     try {
-                                        JsonNode node = MAPPER.readTree(buf.toString());
-                                        String accessToken = node.get("access_token").asText();
-                                        int expiresIn = node.has("expires_in") ? node.get("expires_in").asInt() : configuration.getDefaultTtl();
+                                        var node = MAPPER.readTree(buf.toString());
+                                        var accessToken = node.get("access_token").asText();
+                                        var expiresIn = node.has("expires_in") ? node.get("expires_in").asInt() : configuration.getDefaultTtl();
 
                                         // Store in cache
                                         cache.put(new Element() {
@@ -129,7 +130,7 @@ public class OAuth2TokenOrchestratorPolicy {
                             } else {
                                 res.body().onSuccess(buf -> {
                                     log.warn("Token exchange failed with status {}: {}", res.statusCode(), buf.toString());
-                                    String errorMsg = context.getTemplateEngine().getValue(configuration.getErrorContent(), String.class);
+                                    var errorMsg = context.getTemplateEngine().getValue(configuration.getErrorContent(), String.class);
                                     policyChain.failWith(PolicyResult.failure(configuration.getErrorStatusCode(), errorMsg));
                                 }).onFailure(t -> {
                                     log.error("Token exchange failed and body read failed", t);
@@ -145,7 +146,7 @@ public class OAuth2TokenOrchestratorPolicy {
     }
 
     private String buildFormBody(ExecutionContext context) {
-        Map<String, String> params = new HashMap<>();
+        var params = new HashMap<String, String>();
         params.put("grant_type", configuration.getGrantType());
         if (configuration.getClientId() != null) {
             params.put("client_id", context.getTemplateEngine().getValue(configuration.getClientId(), String.class));
@@ -155,7 +156,7 @@ public class OAuth2TokenOrchestratorPolicy {
         }
 
         if (configuration.getParameters() != null) {
-            for (Map.Entry<String, String> entry : configuration.getParameters().entrySet()) {
+            for (var entry : configuration.getParameters().entrySet()) {
                 params.put(entry.getKey(), context.getTemplateEngine().getValue(entry.getValue(), String.class));
             }
         }
