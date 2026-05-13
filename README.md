@@ -30,7 +30,69 @@ mvn verify
 
 ## Configuration
 
-The policy is configured via the Gravitee Management Console or API.
+The policy is configured via the Gravitee Management Console or API. Below are examples using the Gravitee Terraform APIM provider.
+
+### Medplum (RFC 8693 Token Exchange)
+
+This example replaces multiple `http-callout` and `cache` policies with a single orchestrator.
+
+```hcl
+resource "gravitee_api_v4" "medplum_api" {
+  name = "Medplum FHIR API"
+  # ... other API config ...
+
+  flows = [{
+    name = "Token Exchange Flow"
+    selectors = [{
+      type = "HTTP"
+      path = "/fhir"
+    }]
+    request = [{
+      policy = "oauth2-token-orchestrator"
+      configuration = jsonencode({
+        cacheResource = "shared-redis"
+        tokenEndpoint = "https://api.medplum.com/oauth2/token"
+        grantType     = "urn:ietf:params:oauth:grant-type:token-exchange"
+        clientId      = "YOUR_CLIENT_ID"
+        parameters = {
+          subject_token      = "{#context.attributes['jwt.token']}"
+          subject_token_type = "urn:ietf:params:oauth:token-type:access_token"
+        }
+      })
+    }]
+  }]
+}
+```
+
+### Zoho (OAuth2 Refresh Token)
+
+This example handles the automated refresh and caching of an access token using a long-lived refresh token.
+
+```hcl
+resource "gravitee_api_v4" "zoho_api" {
+  name = "Zoho Desk API"
+  # ... other API config ...
+
+  flows = [{
+    name = "Token Refresh Flow"
+    request = [{
+      policy = "oauth2-token-orchestrator"
+      configuration = jsonencode({
+        cacheResource = "shared-redis"
+        tokenEndpoint = "https://accounts.zoho.com/oauth/v2/token"
+        grantType     = "refresh_token"
+        clientId      = "{#api.properties['zoho-client-id']}"
+        clientSecret  = "{#api.properties['zoho-client-secret']}"
+        parameters = {
+          refresh_token = "{#api.properties['zoho-refresh-token']}"
+        }
+        cacheKey   = "zoho-global-token"
+        defaultTtl = 3500
+      })
+    }]
+  }]
+}
+```
 
 ### Required Fields
 - `cacheResource`: Name of the Gravitee Cache Resource to use.
