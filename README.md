@@ -128,6 +128,14 @@ resource "gravitee_api_v4" "zoho_api" {
 - `cacheKey`: Expression for the unique cache key (Default: `{#context.attributes['jwt.claims']['sub']}`).
 - `parameters`: Map of additional body parameters (Values support EL).
 
+## Deployment
+
+Releases follow **semver tagging**. To publish a new release:
+
+1. Create a GitHub Release with a semver tag (e.g. `v1.0.0`).
+2. The `release.yml` workflow sets the Maven version, builds the plugin ZIP, and attaches it to the release automatically.
+3. Copy the released ZIP into the Gravitee gateway `plugins-ext/` directory and restart the gateway.
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md).
