@@ -124,9 +124,29 @@ resource "gravitee_api_v4" "refresh_api" {
 - `grantType`: The OAuth2 `grant_type` (e.g., `urn:ietf:params:oauth:grant-type:token-exchange`).
 
 ### Optional Fields
-- `clientId`, `clientSecret`
-- `cacheKey`: Expression for the unique cache key (Default: `{#context.attributes['jwt.claims']['sub']}`).
-- `parameters`: Map of additional body parameters (Values support EL).
+- `clientId`, `clientSecret`: Credentials, both EL-templated (e.g. `{#api.properties['client-id']}`).
+- `cacheKey`: Expression for the unique cache key. Default: `{#context.attributes['jwt.claims']['sub']}`. Use a compound expression when one user holds tokens for multiple audiences, e.g. `{#context.attributes['jwt.claims']['aud'] + ' ' + #context.attributes['jwt.claims']['sub']}` — otherwise tokens for different audiences will collide. If the expression fails to resolve, the policy falls back to a hash of the inbound `Authorization` header.
+- `parameters`: Map of additional body parameters (values support EL).
+- `defaultTtl` (default `3600`): Fallback cache TTL in seconds. The policy first tries the IDP's `expires_in` field, then a JWT `exp` claim if `access_token` is a JWT, and only falls back to this value when neither is present.
+- `errorStatusCode` (default `401`): HTTP status returned to the gateway client when the IDP rejects the exchange.
+- `errorContent` (default `{"message": "Token exchange failed"}`): Body returned with that status. Supports EL and has access to the IDP response via two context attributes the policy sets before resolving the template (see below).
+
+### Error template attributes
+
+When the IDP returns a non-2xx response, the policy publishes the response status and body as context attributes **before** evaluating `errorContent`, so detailed operator-facing messages are possible:
+
+| Attribute | Type | Description |
+|---|---|---|
+| `tokenexchange.response.status` | int | Status code returned by the IDP token endpoint |
+| `tokenexchange.response.content` | string | Raw response body returned by the IDP |
+
+Example template that surfaces the underlying IDP failure:
+
+```hcl
+errorContent = "Could not exchange token for subject '{#context.attributes['jwt.claims']['sub']}': ({#context.attributes['tokenexchange.response.status']}) {#context.attributes['tokenexchange.response.content']}"
+```
+
+These attributes are only populated on IDP rejection (non-2xx). Transport-level failures (DNS, connection refused, body read errors) produce a generic `502 Token exchange failed` and do not set the attributes.
 
 ## Deployment
 

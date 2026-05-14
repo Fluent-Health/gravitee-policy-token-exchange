@@ -11,12 +11,14 @@
     <description>Consolidated OAuth2 token exchange and caching policy</description>
 
     <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.release>21</maven.compiler.release>
         <gravitee-policy-api.version>1.11.0</gravitee-policy-api.version>
-        <gravitee-gateway-api.version>4.0.1</gravitee-gateway-api.version>
+        <gravitee-gateway-api.version>3.13.0</gravitee-gateway-api.version>
         <gravitee-common.version>4.2.0</gravitee-common.version>
         <gravitee-resource-api.version>1.1.0</gravitee-resource-api.version>
-        <gravitee-resource-cache-provider-api.version>1.1.0</gravitee-resource-cache-provider-api.version>
+        <gravitee-resource-cache-provider-api.version>2.1.0</gravitee-resource-cache-provider-api.version>
         <jackson-databind.version>2.17.1</jackson-databind.version>
         <junit-jupiter.version>5.10.2</junit-jupiter.version>
         <mockito.version>5.11.0</mockito.version>
@@ -124,14 +126,26 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>1.7.36</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.5.6</version>
+            <version>1.2.13</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -139,18 +153,29 @@
                 <version>3.13.0</version>
                 <configuration>
                     <release>${maven.compiler.release}</release>
+                    <proc>none</proc>
                 </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
+                <configuration>
+                    <argLine>-javaagent:${net.bytebuddy:byte-buddy-agent:jar}</argLine>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
                 <version>3.6.1</version>
                 <executions>
+                    <execution>
+                        <id>resolve-byte-buddy-agent</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
                     <execution>
                         <id>copy-dependencies</id>
                         <phase>prepare-package</phase>
@@ -177,6 +202,7 @@
                     </execution>
                 </executions>
                 <configuration>
+                    <argLine>-javaagent:${net.bytebuddy:byte-buddy-agent:jar}</argLine>
                     <includes>
                         <include>**/*IT.java</include>
                     </includes>

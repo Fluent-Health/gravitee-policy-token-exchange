@@ -1,95 +1,103 @@
 package io.fluenthealth.gravitee.policy.tokenexchange;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 import io.fluenthealth.gravitee.policy.tokenexchange.configuration.OAuth2TokenOrchestratorPolicyConfiguration;
 import io.gravitee.el.TemplateEngine;
-import io.gravitee.gateway.api.ExecutionContext;
-import io.gravitee.gateway.api.Request;
-import io.gravitee.gateway.api.Response;
 import io.gravitee.gateway.api.http.HttpHeaders;
-import io.gravitee.policy.api.PolicyChain;
+import io.gravitee.gateway.reactive.api.ExecutionFailure;
+import io.gravitee.gateway.reactive.api.context.http.HttpPlainExecutionContext;
+import io.gravitee.gateway.reactive.api.context.http.HttpPlainRequest;
 import io.gravitee.resource.api.ResourceManager;
 import io.gravitee.resource.cache.api.Cache;
 import io.gravitee.resource.cache.api.CacheResource;
 import io.gravitee.resource.cache.api.Element;
-import io.vertx.core.http.HttpClient;
-import io.vertx.core.http.HttpMethod;
+import io.reactivex.rxjava3.core.Completable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.*;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 @ExtendWith(MockitoExtension.class)
-@org.mockito.junit.jupiter.MockitoSettings(strictness = org.mockito.quality.Strictness.LENIENT)
-public class OAuth2TokenOrchestratorPolicyTest {
+@MockitoSettings(strictness = Strictness.LENIENT)
+@SuppressWarnings({ "deprecation", "removal" })
+class OAuth2TokenOrchestratorPolicyTest {
 
     @Mock
-    private ExecutionContext executionContext;
-    @Mock
-    private Request request;
-    @Mock
-    private Response response;
-    @Mock
-    private PolicyChain policyChain;
-    @Mock
-    private ResourceManager resourceManager;
-    @Mock
-    private TemplateEngine templateEngine;
-    @Mock
-    private CacheResource cacheResource;
-    @Mock
-    private Cache cache;
-    @Mock
-    private Element element;
+    HttpPlainExecutionContext ctx;
 
-    private OAuth2TokenOrchestratorPolicyConfiguration configuration;
+    @Mock
+    HttpPlainRequest request;
+
+    @Mock
+    ResourceManager resourceManager;
+
+    @Mock
+    TemplateEngine templateEngine;
+
+    @Mock
+    CacheResource<?> cacheResource;
+
+    @Mock
+    Cache cache;
+
+    @Mock
+    Element cachedElement;
+
+    HttpHeaders headers;
+    OAuth2TokenOrchestratorPolicyConfiguration configuration;
+    OAuth2TokenOrchestratorPolicy policy;
 
     @BeforeEach
-    public void setUp() {
+    void setUp() {
+        headers = HttpHeaders.create();
         configuration = new OAuth2TokenOrchestratorPolicyConfiguration();
         configuration.setCacheResource("test-cache");
-    }
-
-    @Test
-    public void shouldFailIfCacheResourceNotFound() {
-        when(executionContext.getComponent(ResourceManager.class)).thenReturn(resourceManager);
-        when(resourceManager.getResource(configuration.getCacheResource(), CacheResource.class)).thenReturn(null);
-
-        OAuth2TokenOrchestratorPolicy policy = new OAuth2TokenOrchestratorPolicy(configuration);
-        policy.onRequest(request, response, executionContext, policyChain);
-
-        verify(policyChain).failWith(argThat(result -> result.statusCode() == 500));
-    }
-
-    @Test
-    public void shouldPerformExchangeOnCacheMiss() {
-        String cacheKey = "user123";
-        String tokenEndpoint = "http://idp/token";
-
-        when(executionContext.getComponent(ResourceManager.class)).thenReturn(resourceManager);
-        when(resourceManager.getResource(configuration.getCacheResource(), CacheResource.class)).thenReturn(cacheResource);
-        when(cacheResource.getCache(executionContext)).thenReturn(cache);
-        when(executionContext.getTemplateEngine()).thenReturn(templateEngine);
-        when(templateEngine.getValue(configuration.getCacheKey(), String.class)).thenReturn(cacheKey);
-        when(cache.get(cacheKey)).thenReturn(null); // MISS
-
-        configuration.setTokenEndpoint(tokenEndpoint);
+        configuration.setTokenEndpoint("http://idp/token");
         configuration.setGrantType("client_credentials");
-        when(templateEngine.getValue(tokenEndpoint, String.class)).thenReturn(tokenEndpoint);
+        policy = new OAuth2TokenOrchestratorPolicy(configuration);
 
-        HttpClient httpClient = mock(HttpClient.class);
-        when(executionContext.getComponent(HttpClient.class)).thenReturn(httpClient);
-        when(httpClient.request(any(io.vertx.core.http.RequestOptions.class))).thenReturn(io.vertx.core.Future.failedFuture("mock-miss"));
+        when(ctx.request()).thenReturn(request);
+        when(request.headers()).thenReturn(headers);
+        when(ctx.getComponent(ResourceManager.class)).thenReturn(resourceManager);
+        when(ctx.getTemplateEngine()).thenReturn(templateEngine);
+        when(templateEngine.getValue(any(String.class), eq(String.class))).thenAnswer(inv -> inv.getArgument(0));
+    }
 
-        HttpHeaders requestHeaders = HttpHeaders.create();
-        when(request.headers()).thenReturn(requestHeaders);
+    @Test
+    void interruptsWith500WhenCacheResourceMissing() {
+        when(resourceManager.getResource("test-cache", CacheResource.class)).thenReturn(null);
+        when(ctx.interruptWith(any(ExecutionFailure.class))).thenReturn(Completable.error(new RuntimeException("interrupted")));
 
-        OAuth2TokenOrchestratorPolicy policy = new OAuth2TokenOrchestratorPolicy(configuration);
-        policy.onRequest(request, response, executionContext, policyChain);
+        policy.onRequest(ctx).test().assertError(RuntimeException.class);
 
-        verify(httpClient).request(any(io.vertx.core.http.RequestOptions.class));
+        verify(ctx)
+            .interruptWith(
+                org.mockito.ArgumentMatchers.argThat(f -> f.statusCode() == 500 && f.message().contains("test-cache"))
+            );
+    }
+
+    @Test
+    @SuppressWarnings({ "rawtypes", "unchecked" })
+    void servesCachedTokenWithoutExchange() {
+        when(resourceManager.getResource("test-cache", CacheResource.class)).thenReturn((CacheResource) cacheResource);
+        when(((CacheResource) cacheResource).getCache(ctx)).thenReturn(cache);
+        headers.set("Authorization", "Bearer inbound");
+        when(cache.get(any())).thenReturn(cachedElement);
+        when(cachedElement.value()).thenReturn("cached-access-token");
+
+        policy.onRequest(ctx).test().assertComplete().assertNoErrors();
+
+        assertThat(headers.get("Authorization")).isEqualTo("Bearer cached-access-token");
+        verify(cache, never()).put(any());
+        verify(ctx, never()).interruptWith(any());
     }
 }
