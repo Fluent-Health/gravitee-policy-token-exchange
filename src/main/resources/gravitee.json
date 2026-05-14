@@ -47,11 +47,6 @@
       "title": "Error Content",
       "default": "{\"message\": \"Token exchange failed\"}"
     },
-    "exitOnError": {
-      "type": "boolean",
-      "title": "Exit on Error",
-      "default": true
-    },
     "parameters": {
       "type": "object",
       "title": "Additional Parameters",
