@@ -37,6 +37,11 @@ jobs:
       - name: Unit tests
         run: mvn test --batch-mode -q
 
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.1
+          terraform_wrapper: false
+
       - name: Integration tests (Full-Stack Gravitee E2E)
         run: mvn verify -DskipTests=false --batch-mode -q
 
