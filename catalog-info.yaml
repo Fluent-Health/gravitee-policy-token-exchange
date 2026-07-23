@@ -22,7 +22,6 @@ metadata:
   annotations:
     github.com/project-slug: Fluent-Health/gravitee-policy-token-exchange
     fluentinhealth.com/oss: published
-    backstage.io/techdocs-ref: dir:.
 spec:
   type: library
   lifecycle: production
