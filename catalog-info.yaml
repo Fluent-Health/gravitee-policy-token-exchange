@@ -21,7 +21,7 @@ metadata:
   description: Gravitee APIM policy plugin for generalized OAuth2 token exchange and caching.
   annotations:
     github.com/project-slug: Fluent-Health/gravitee-policy-token-exchange
-    fluentinhealth.com/oss: pending
+    fluentinhealth.com/oss: published
 spec:
   type: library
   lifecycle: production
