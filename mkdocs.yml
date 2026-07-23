@@ -1,0 +1,8 @@
+site_name: Gravitee Policy — Token Exchange
+site_description: Gravitee APIM policy plugin for generalized OAuth2 token exchange and caching.
+
+nav:
+  - Plans:
+      - OAuth2 Token Orchestrator: superpowers/plans/2026-05-13-oauth2-token-orchestrator.md
+  - Specs:
+      - OAuth2 Token Orchestrator Design: superpowers/specs/2026-05-13-oauth2-token-orchestrator-design.md
