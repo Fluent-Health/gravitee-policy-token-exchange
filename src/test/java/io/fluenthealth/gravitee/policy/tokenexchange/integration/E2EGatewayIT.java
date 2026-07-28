@@ -38,6 +38,14 @@ public class E2EGatewayIT {
     private static final Network network = Network.newNetwork();
     private static final String MONGO_URI = "mongodb://mongodb:27017/gravitee?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000";
 
+    /**
+     * APIM version under test. Defaults to the latest release. This plugin major requires
+     * APIM >= 4.12 (Vert.x 5) — pointing it at 4.11 or earlier fails at exchange time with a
+     * {@code NoSuchMethodError}, which is expected, not a bug. CI runs the full supported range;
+     * see {@code .github/workflows/integration-matrix.yml}.
+     */
+    private static final String APIM_VERSION = System.getProperty("apim.version", "4.12.12");
+
     private static final MongoDBContainer mongodb = new MongoDBContainer("mongo:7.0")
             .withNetwork(network)
             .withNetworkAliases("mongodb");
@@ -49,7 +57,7 @@ public class E2EGatewayIT {
             .withLogConsumer(filteredLogConsumer("wiremock"))
             .waitingFor(Wait.forHttp("/__admin").forStatusCode(200));
 
-    private static final GenericContainer<?> managementApi = new GenericContainer<>("graviteeio/apim-management-api:4.9.13")
+    private static final GenericContainer<?> managementApi = new GenericContainer<>("graviteeio/apim-management-api:" + APIM_VERSION)
             .withCreateContainerCmdModifier(cmd -> cmd.withUser("root"))
             .withNetwork(network)
             .withNetworkAliases("management")
@@ -73,7 +81,7 @@ public class E2EGatewayIT {
             .dependsOn(mongodb)
             .waitingFor(Wait.forHttp("/_node/health").forPort(18083).forStatusCode(200).withStartupTimeout(Duration.ofSeconds(300)));
 
-    private static final GenericContainer<?> gateway = new GenericContainer<>("graviteeio/apim-gateway:4.9.13")
+    private static final GenericContainer<?> gateway = new GenericContainer<>("graviteeio/apim-gateway:" + APIM_VERSION)
             .withCreateContainerCmdModifier(cmd -> cmd.withUser("root"))
             .withNetwork(network)
             .withNetworkAliases("gateway")
@@ -273,6 +281,13 @@ public class E2EGatewayIT {
         "^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\s+\\[[^\\]]+\\]\\s*"
     );
 
+    // Matches a bare JVM throwable header, e.g. "java.lang.NoSuchMethodError: io.vertx..." or
+    // "Caused by: java.lang.IllegalStateException: ...". These lines have no log level, so the
+    // level-based clauses below never see them.
+    private static final java.util.regex.Pattern THROWABLE_HEADER = java.util.regex.Pattern.compile(
+        "^(Caused by: )?(java|javax|jakarta|io|com|org)\\.[\\w.$]*(Exception|Error|Throwable)\\b"
+    );
+
     // Known harmless ERROR-level messages emitted by Gravitee at startup. Listed explicitly
     // (not regex-broad) so we don't silently swallow real errors that look similar.
     private static final List<String> SILENCED_BOOT_ERRORS = List.of(
@@ -294,6 +309,11 @@ public class E2EGatewayIT {
                 logger.error("[{}] {}", prefix, trimmed);
             } else if (line.contains("OAuth2TokenOrchestratorPolicy") || line.contains("io.fluenthealth")) {
                 logger.info("[{}] {}", prefix, trimmed);
+            } else if (THROWABLE_HEADER.matcher(trimmed).find()) {
+                // Bare exception header lines carry no log level and no package of ours, so the
+                // clauses above miss them and a stack trace arrives with its cause stripped off.
+                // That is exactly how a linkage error against a new Gravitee release looks.
+                logger.warn("[{}] {}", prefix, trimmed);
             } else if (line.contains("ApiManagerImpl") && (line.contains("has been deployed") || line.contains("has been undeployed"))) {
                 logger.info("[{}] {}", prefix, trimmed);
             }

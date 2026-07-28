@@ -5,6 +5,10 @@ on:
     branches: ["main"]
   pull_request:
 
+# Least privilege by default; jobs opt into more only if they need it.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,14 +28,6 @@ jobs:
       - name: Unit tests
         run: mvn test -q
 
-      - uses: hashicorp/setup-terraform@v4
-        with:
-          terraform_version: 1.15.1
-          terraform_wrapper: false
-
-      - name: Integration tests (Full-Stack Gravitee E2E)
-        run: mvn verify -DskipTests=false -q
-
       - name: Build plugin ZIP
         run: mvn package -DskipTests -q
 
@@ -40,3 +36,12 @@ jobs:
           name: plugin-zip
           path: target/gravitee-policy-token-exchange-*.zip
           retention-days: 7
+
+  # Container-backed E2E against each supported Gravitee version combination.
+  # The matrix lives in .github/workflows/integration-matrix.yml so CI and
+  # Release cannot drift apart.
+  integration:
+    needs: build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/integration-matrix.yml

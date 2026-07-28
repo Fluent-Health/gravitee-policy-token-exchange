@@ -1,0 +1,65 @@
+name: Integration matrix
+
+# Reusable workflow. Runs the container-backed integration tests against every
+# Gravitee version combination the policy is expected to support.
+#
+# This plugin major requires APIM >= 4.12 (Vert.x 5). APIM 4.11 and earlier ship
+# Vert.x 4 and are supported by the 1.x line only — do not add a 4.11 leg here.
+#
+# Every leg is explicitly pinned rather than tracking the floating `latest`
+# Docker tag, so CI stays deterministic and a version bump is always a
+# deliberate, reviewable change.
+
+on:
+  workflow_call:
+
+# Least privilege by default. A called workflow can never receive more than the
+# calling job grants it, but declare it here too so the constraint is visible
+# at the point of use.
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: APIM ${{ matrix.apim }} / AM ${{ matrix.am }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    strategy:
+      # Report every leg. A break on one version must not hide the result for
+      # the others.
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest APIM this major supports: the first release on Vert.x 5.
+          # Guards against accidentally depending on a later 4.12.x addition.
+          - apim: "4.12.0"
+            am: "4.12.2"
+          # Latest published release: early warning for upstream breakage
+          # (removed policy APIs, EL changes, management API drift).
+          - apim: "4.12.12"
+            am: "4.12.2"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: "21"
+          distribution: "temurin"
+          cache: maven
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.1
+          terraform_wrapper: false
+
+      # `mvn verify` packages the plugin ZIP (the ITs mount it into the
+      # containers) and then runs surefire + failsafe.
+      - name: Integration tests (E2EGatewayIT + AmDomainV2GatewayIT)
+        run: >
+          mvn verify --batch-mode -q
+          -Dapim.version=${{ matrix.apim }}
+          -Dam.version=${{ matrix.am }}
