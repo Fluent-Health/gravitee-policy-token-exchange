@@ -32,10 +32,12 @@ import org.slf4j.LoggerFactory;
  * Gravitee {@link CacheResource}. Cache TTL is derived from the OAuth2 response (the
  * {@code expires_in} field or, failing that, the JWT {@code exp} claim).
  */
-// TemplateEngine.getValue is deprecated in newer EL releases (replaced by evalNow). The version
-// of gravitee-expression-language pulled transitively by gateway-api 3.13.0 does not yet expose
-// evalNow, and the only non-deprecated alternative is the reactive Maybe<T> eval(...). Revisit
-// when the gateway-api version is bumped past EL 4.x.
+// TemplateEngine.getValue is deprecated in newer EL releases (replaced by evalNow). gateway-api
+// 6.3.0 still pulls gravitee-expression-language 3.2.1 transitively, which does not expose
+// evalNow, so getValue remains the only non-reactive option at compile time — the alternative is
+// the reactive Maybe<T> eval(...). Note the APIM 4.12 runtime actually ships EL 4.4.0, so
+// switching would mean declaring EL explicitly as a `provided` dependency rather than inheriting
+// it; the ITs confirm getValue still resolves against the 4.4.0 runtime.
 @SuppressWarnings({ "deprecation", "removal" })
 public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
 
@@ -257,13 +259,38 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
                         log.debug("No HttpClient component bound to context, falling back to Vertx: {}", e.toString());
                     }
                     if (client == null) {
-                        client = ctx.getComponent(Vertx.class).createHttpClient();
+                        client = createHttpClient(ctx.getComponent(Vertx.class));
                     }
                     httpClient = client;
                 }
             }
         }
         return client;
+    }
+
+    /**
+     * Creates the Vert.x {@link HttpClient} used for token requests.
+     *
+     * <p>Compiled against Vert.x 5, where {@code Vertx.createHttpClient()} returns
+     * {@code HttpClientAgent} rather than {@code HttpClient}. Because the JVM resolves methods by
+     * name <em>and descriptor</em>, this call does not link against the Vert.x 4.5 that APIM 4.11
+     * and earlier ship. The plugin loads and the API deploys normally on those gateways, and only
+     * then does every request fail here — so translate the linkage error into something that
+     * names the actual problem instead of leaving a bare {@code NoSuchMethodError} in the log.
+     */
+    private static HttpClient createHttpClient(Vertx vertx) {
+        try {
+            return vertx.createHttpClient();
+        } catch (LinkageError e) {
+            // LinkageError, not just NoSuchMethodError: resolving this call site on a Vert.x 4
+            // runtime can also surface as NoClassDefFoundError, since HttpClientAgent (the
+            // Vert.x 5 return type named in the descriptor) does not exist there at all.
+            throw new IllegalStateException(
+                "Incompatible Gravitee runtime: this plugin (2.x) is built for Vert.x 5 and requires APIM 4.12 or later. " +
+                "The gateway appears to be running Vert.x 4 (APIM 4.11 or earlier) — deploy a 1.x release of the plugin instead.",
+                e
+            );
+        }
     }
 
     private record TokenInfo(String accessToken, int ttl) {}

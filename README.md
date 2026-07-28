@@ -14,6 +14,19 @@ A project by [Fluent Health](https://github.com/Fluent-Health).
 - **Asynchronous**: Built on Vert.x 4.x `HttpClient` for non-blocking gateway execution.
 - **Trace Context**: Propagates W3C `traceparent` and `X-Request-ID` headers to the token provider.
 
+## Compatibility
+
+**Pick the plugin line that matches your APIM version — they are not interchangeable.**
+
+| Plugin | Requires APIM | Vert.x runtime |
+| --- | --- | --- |
+| **2.x** | **>= 4.12** | 5.0.x |
+| 1.x | <= 4.11 | 4.5.x |
+
+APIM 4.12 upgraded Vert.x from 4.5 to 5.0, and Vert.x 5 changed the return type of `Vertx.createHttpClient()` from `HttpClient` to `HttpClientAgent`. Because the JVM resolves methods by name *and descriptor*, a build compiled against one major cannot run on the other. The failure mode is deliberately worth knowing: **the plugin loads and deploys normally, then every request fails at exchange time with `NoSuchMethodError`.** A green gateway startup is not evidence that you picked the right line.
+
+2.x is verified end to end by CI against APIM 4.12.0 and 4.12.12 (see `.github/workflows/integration-matrix.yml`). If you are still on APIM 4.11 or earlier, use the latest 1.x release.
+
 ## Development
 
 Prerequisites: `asdf`, Docker.
@@ -148,11 +161,26 @@ errorContent = "Could not exchange token for subject '{#context.attributes['jwt.
 
 These attributes are only populated on IDP rejection (non-2xx). Transport-level failures (DNS, connection refused, body read errors) produce a generic `502 Token exchange failed` and do not set the attributes.
 
+## Relationship to Gravitee AM's built-in Token Exchange
+
+Gravitee Access Management gained native RFC 8693 support in **AM 4.11**, configured per security domain. That feature and this policy solve different halves of the problem, and one does not replace the other:
+
+| | AM native Token Exchange | This policy |
+|---|---|---|
+| Role | **Token issuer** — AM validates a presented token and mints a *new AM token* (impersonation or delegation with an `act` claim) | **Token client** — the gateway presents the inbound token to *somebody else's* token endpoint and injects the token that endpoint returns |
+| Who issues the resulting token | AM | Any third-party OAuth2 provider |
+| Caching | Not applicable | Delegated to a Gravitee `CacheResource`, TTL derived from `expires_in` / JWT `exp` |
+| Grant types | Token exchange | Token exchange, `refresh_token`, or any other form-encoded grant |
+
+Use AM's native feature when the *audience trusts AM* and an AM-issued token is what the backend wants. Use this policy when the backend requires a token issued by its **own** authorization server — a SaaS API reached with a `refresh_token`, or a downstream product that implements its own RFC 8693 endpoint and trusts AM as an external issuer. AM cannot fill that role: it never acts as an HTTP client of a foreign token endpoint.
+
+There is also no first-party APIM policy that covers this. The closest built-in equivalent is chaining `policy-cache` → `policy-callout-http` → `policy-cache` → `policy-transform-headers`, which this policy collapses into one step (and which cannot derive its cache TTL from the token response).
+
 ## Deployment
 
 Releases follow **semver tagging**. To publish a new release:
 
-1. Create a GitHub Release with a semver tag (e.g. `v1.0.0`).
+1. Create a GitHub Release with a semver tag (e.g. `v2.0.0`).
 2. The `release.yml` workflow sets the Maven version, builds the plugin ZIP, and attaches it to the release automatically.
 3. Copy the released ZIP into the Gravitee gateway `plugins-ext/` directory and restart the gateway.
 

@@ -8,7 +8,13 @@ permissions:
   contents: write
 
 jobs:
+  # Never publish a ZIP that has not passed against every supported Gravitee
+  # version combination. Shares its matrix with CI.
+  integration:
+    uses: ./.github/workflows/integration-matrix.yml
+
   release:
+    needs: integration
     runs-on: ubuntu-latest
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -36,14 +42,6 @@ jobs:
 
       - name: Unit tests
         run: mvn test --batch-mode -q
-
-      - uses: hashicorp/setup-terraform@v4
-        with:
-          terraform_version: 1.15.1
-          terraform_wrapper: false
-
-      - name: Integration tests (Full-Stack Gravitee E2E)
-        run: mvn verify -DskipTests=false --batch-mode -q
 
       - name: Build plugin ZIP
         run: |
