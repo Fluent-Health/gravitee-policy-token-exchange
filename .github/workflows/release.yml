@@ -4,18 +4,24 @@ on:
   release:
     types: [published]
 
+# Least privilege by default. Only the release job needs write access, to
+# attach the ZIP to the GitHub Release.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # Never publish a ZIP that has not passed against every supported Gravitee
   # version combination. Shares its matrix with CI.
   integration:
+    permissions:
+      contents: read
     uses: ./.github/workflows/integration-matrix.yml
 
   release:
     needs: integration
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:

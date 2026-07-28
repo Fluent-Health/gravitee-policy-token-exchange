@@ -13,6 +13,12 @@ name: Integration matrix
 on:
   workflow_call:
 
+# Least privilege by default. A called workflow can never receive more than the
+# calling job grants it, but declare it here too so the constraint is visible
+# at the point of use.
+permissions:
+  contents: read
+
 jobs:
   integration:
     name: APIM ${{ matrix.apim }} / AM ${{ matrix.am }}
