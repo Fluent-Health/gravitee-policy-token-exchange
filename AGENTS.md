@@ -54,7 +54,7 @@ Both ITs take their container versions from system properties, and CI runs them 
 | floor | `4.12.0` | `4.12.2` | Oldest APIM this major supports — the first release on Vert.x 5. Catches accidental reliance on a later 4.12.x addition. |
 | latest | `4.12.12` | `4.12.2` | Early warning for upstream breakage. |
 
-**Do not add an APIM 4.11 leg** — see the Vert.x note above. 4.11 support lives on the `1.x` branch.
+**Do not add an APIM 4.11 leg** — see the Vert.x note above. 4.11 support lives on the `0.1.x` line.
 
 The Java defaults are the **latest** versions, so a bare `mvn verify` exercises the newest supported combination. To test another locally:
 
@@ -70,7 +70,7 @@ curl -s "https://hub.docker.com/v2/repositories/graviteeio/apim-gateway/tags?pag
 
 ### Deployment sequencing
 
-A 2.x ZIP and an APIM 4.12 gateway have to arrive together. **Upgrade APIM first, then the plugin** — never the other way round, and never the plugin alone. A gateway still on 4.11 keeps running 1.x until it is upgraded.
+A 2.x ZIP and an APIM 4.12 gateway have to arrive together. **Upgrade APIM first, then the plugin** — never the other way round, and never the plugin alone. A gateway still on 4.11 keeps running `0.1.x` until it is upgraded.
 
 There is no guard rail at deploy time: dropping a 2.x ZIP into `plugins-ext/` on a 4.11 gateway succeeds, the API deploys, and only then does every request fail. The policy turns that into an explanatory error rather than a bare `NoSuchMethodError` (see `createHttpClient`), but the deploy itself will not stop you.
 
@@ -85,7 +85,7 @@ There is no guard rail at deploy time: dropping a 2.x ZIP into `plugins-ext/` on
 
 The `2.x` line is compiled against **Vert.x 5.0.12**, as shipped by APIM 4.12. It **cannot run on APIM 4.11 or earlier** (Vert.x 4.5) — `Vertx.createHttpClient()` returns `HttpClient` on Vert.x 4 and `HttpClientAgent` on Vert.x 5, and the JVM resolves methods by name **and descriptor**. The failure mode is nasty: the plugin loads and the API deploys cleanly, then every request fails at exchange time with `NoSuchMethodError`. A clean gateway startup proves nothing here.
 
-APIM 4.11 and earlier are served by the `1.x` line, which is compiled against Vert.x 4. Do not try to make one artifact span both — the only way to do that is to resolve the factory method reflectively, and that was deliberately abandoned in favour of a clean major split.
+APIM 4.11 and earlier are served by the `0.1.x` line (latest `0.1.1`), which is compiled against Vert.x 4. There is no 1.x line — the version deliberately jumps from `0.1.x` to `2.0.0` so the Vert.x boundary is a major bump. Do not try to make one artifact span both — the only way to do that is to resolve the factory method reflectively, and that was deliberately abandoned in favour of a clean major split.
 
 The gateway API versions in `pom.xml` are all `provided` and must track the target APIM release. Read them off the image rather than guessing:
 

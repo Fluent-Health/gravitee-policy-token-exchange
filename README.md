@@ -21,11 +21,11 @@ A project by [Fluent Health](https://github.com/Fluent-Health).
 | Plugin | Requires APIM | Vert.x runtime |
 | --- | --- | --- |
 | **2.x** | **>= 4.12** | 5.0.x |
-| 1.x | <= 4.11 | 4.5.x |
+| 0.1.x | <= 4.11 | 4.5.x |
 
 APIM 4.12 upgraded Vert.x from 4.5 to 5.0, and Vert.x 5 changed the return type of `Vertx.createHttpClient()` from `HttpClient` to `HttpClientAgent`. Because the JVM resolves methods by name *and descriptor*, a build compiled against one major cannot run on the other. The failure mode is deliberately worth knowing: **the plugin loads and deploys normally, then every request fails at exchange time with `NoSuchMethodError`.** A green gateway startup is not evidence that you picked the right line.
 
-2.x is verified end to end by CI against APIM 4.12.0 and 4.12.12 (see `.github/workflows/integration-matrix.yml`). If you are still on APIM 4.11 or earlier, use the latest 1.x release.
+2.x is verified end to end by CI against APIM 4.12.0 and 4.12.12 (see `.github/workflows/integration-matrix.yml`). If you are still on APIM 4.11 or earlier, use the `0.1.x` line — the latest is [`0.1.1`](https://github.com/Fluent-Health/gravitee-policy-token-exchange/releases/tag/0.1.1). There is no 1.x line; the version jumps from `0.1.x` to `2.0.0` to make the Vert.x boundary a major bump.
 
 ## Development
 
@@ -180,7 +180,7 @@ There is also no first-party APIM policy that covers this. The closest built-in 
 
 Releases follow **semver tagging**. To publish a new release:
 
-1. Create a GitHub Release with a semver tag (e.g. `v2.0.0`).
+1. Create a GitHub Release with a semver tag, unprefixed to match existing tags (e.g. `2.0.0`).
 2. The `release.yml` workflow sets the Maven version, builds the plugin ZIP, and attaches it to the release automatically.
 3. Copy the released ZIP into the Gravitee gateway `plugins-ext/` directory and restart the gateway.
 
