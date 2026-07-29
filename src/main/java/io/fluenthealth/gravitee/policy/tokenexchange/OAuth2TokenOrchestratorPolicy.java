@@ -287,7 +287,7 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
             // Vert.x 5 return type named in the descriptor) does not exist there at all.
             throw new IllegalStateException(
                 "Incompatible Gravitee runtime: this plugin (2.x) is built for Vert.x 5 and requires APIM 4.12 or later. " +
-                "The gateway appears to be running Vert.x 4 (APIM 4.11 or earlier) — deploy a 1.x release of the plugin instead.",
+                "The gateway appears to be running Vert.x 4 (APIM 4.11 or earlier) — deploy the 0.1.x line of the plugin instead.",
                 e
             );
         }
