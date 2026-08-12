@@ -17,7 +17,7 @@
     "grantType": {
       "type": "string",
       "title": "Grant Type",
-      "description": "The OAuth2 grant_type (e.g., urn:ietf:params:oauth:grant-type:token-exchange)."
+      "description": "The OAuth2 grant_type (e.g., urn:ietf:params:oauth:grant-type:token-exchange). Required for requestFormat 'form'; ignored for 'json', where the body is built from parameters alone."
     },
     "clientId": {
       "type": "string",
@@ -50,10 +50,37 @@
     "parameters": {
       "type": "object",
       "title": "Additional Parameters",
+      "description": "Extra request fields, values may be EL expressions. For requestFormat 'json' this map IS the request body.",
       "additionalProperties": {
         "type": "string"
       }
+    },
+    "clientAuthMethod": {
+      "type": "string",
+      "title": "Client Authentication Method",
+      "description": "How client credentials are presented (RFC 6749 §2.3.1). 'client_secret_post' puts them in the request body; 'client_secret_basic' sends an Authorization: Basic header and omits them from the body.",
+      "enum": ["client_secret_post", "client_secret_basic"],
+      "default": "client_secret_post"
+    },
+    "requestFormat": {
+      "type": "string",
+      "title": "Request Body Format",
+      "description": "'form' sends application/x-www-form-urlencoded with grant_type and client credentials. 'json' sends an application/json object built from parameters alone, for mint endpoints that are not OAuth2 token endpoints.",
+      "enum": ["form", "json"],
+      "default": "form"
+    },
+    "tokenPath": {
+      "type": "string",
+      "title": "Token Field Path",
+      "description": "Dot-separated path to the token in the response, e.g. 'access_token', 'accessToken', 'data.token'. A leading '$.' is accepted and ignored.",
+      "default": "access_token"
+    },
+    "maxTtl": {
+      "type": "integer",
+      "title": "Maximum TTL (seconds)",
+      "description": "Upper bound on the cache TTL. 0 means unbounded, leaving the TTL as derived from expires_in or the JWT exp claim. Set this when the provider issues a long-lived token but its underlying credential can be rotated, so a rotation takes effect within a bounded window.",
+      "default": 0
     }
   },
-  "required": ["cacheResource", "tokenEndpoint", "grantType"]
+  "required": ["cacheResource", "tokenEndpoint"]
 }

@@ -11,7 +11,10 @@ A project by [Fluent Health](https://github.com/Fluent-Health).
 - **Unified Flow**: Handles cache lookup, asynchronous token request, cache update, and header injection.
 - **RFC 8693 Support**: Specialized for generic OAuth2 Token Exchange.
 - **Refresh Token Support**: Configurable for standard OAuth2 refresh flows.
-- **Asynchronous**: Built on Vert.x 4.x `HttpClient` for non-blocking gateway execution.
+- **Both client authentication methods**: `client_secret_post` and `client_secret_basic` (RFC 6749 §2.3.1).
+- **Non-OAuth2 mint endpoints**: JSON request bodies and a configurable token field path, for services that hand out tokens without speaking OAuth2.
+- **Bounded caching**: TTL derived from the response, optionally capped so a credential rotation takes effect within a known window.
+- **Asynchronous**: Built on Vert.x `HttpClient` for non-blocking gateway execution.
 - **Trace Context**: Propagates W3C `traceparent` and `X-Request-ID` headers to the token provider.
 
 ## Compatibility
@@ -133,16 +136,62 @@ resource "gravitee_api_v4" "refresh_api" {
 
 ### Required Fields
 - `cacheResource`: Name of the Gravitee Cache Resource to use.
-- `tokenEndpoint`: The full URL to the OAuth2 provider token endpoint.
-- `grantType`: The OAuth2 `grant_type` (e.g., `urn:ietf:params:oauth:grant-type:token-exchange`).
+- `tokenEndpoint`: The full URL to the token endpoint.
+- `grantType`: The OAuth2 `grant_type` (e.g., `urn:ietf:params:oauth:grant-type:token-exchange`). Required for `requestFormat: form`; ignored for `json`.
 
 ### Optional Fields
 - `clientId`, `clientSecret`: Credentials, both EL-templated (e.g. `{#api.properties['client-id']}`).
+- `clientAuthMethod` (default `client_secret_post`): How the credentials are presented — see [Client authentication](#client-authentication).
+- `requestFormat` (default `form`): Request body encoding — see [Non-OAuth2 mint endpoints](#non-oauth2-mint-endpoints-requestformat-json).
+- `tokenPath` (default `access_token`): Dot-separated path to the token in the response, e.g. `accessToken` or `data.token`. A leading `$.` is accepted and ignored. Not JSONPath — plain field names only.
 - `cacheKey`: Expression for the unique cache key. Default: `{#context.attributes['jwt.claims']['sub']}`. Use a compound expression when one user holds tokens for multiple audiences, e.g. `{#context.attributes['jwt.claims']['aud'] + ' ' + #context.attributes['jwt.claims']['sub']}` — otherwise tokens for different audiences will collide. If the expression fails to resolve, the policy falls back to a hash of the inbound `Authorization` header.
-- `parameters`: Map of additional body parameters (values support EL).
-- `defaultTtl` (default `3600`): Fallback cache TTL in seconds. The policy first tries the IDP's `expires_in` field, then a JWT `exp` claim if `access_token` is a JWT, and only falls back to this value when neither is present.
-- `errorStatusCode` (default `401`): HTTP status returned to the gateway client when the IDP rejects the exchange.
-- `errorContent` (default `{"message": "Token exchange failed"}`): Body returned with that status. Supports EL and has access to the IDP response via two context attributes the policy sets before resolving the template (see below).
+- `parameters`: Map of additional body parameters (values support EL). Under `requestFormat: json` this map **is** the request body.
+- `defaultTtl` (default `3600`): Fallback cache TTL in seconds. The policy first tries the provider's `expires_in` field, then a JWT `exp` claim if the token is a JWT, and only falls back to this value when neither is present.
+- `maxTtl` (default `0`, meaning unbounded): Upper bound on the cache TTL. See [Bounding the TTL](#bounding-the-ttl-maxttl).
+- `errorStatusCode` (default `401`): HTTP status returned to the gateway client when the provider rejects the exchange.
+- `errorContent` (default `{"message": "Token exchange failed"}`): Body returned with that status. Supports EL and has access to the provider response via two context attributes the policy sets before resolving the template (see below).
+
+### Client authentication
+
+`clientAuthMethod` selects how client credentials reach the token endpoint, per [RFC 6749 §2.3.1](https://datatracker.ietf.org/doc/html/rfc6749#section-2.3.1):
+
+| Value | Behaviour |
+| --- | --- |
+| `client_secret_post` (default) | `client_id` / `client_secret` in the request body. |
+| `client_secret_basic` | `Authorization: Basic base64(urlencode(id):urlencode(secret))`, and both are omitted from the body. |
+
+Endpoints are not consistent about which they accept, and one that requires Basic answers `client_secret_post` with a `401` — which surfaces as a `502` on every proxied call, since the policy could not obtain a token. If a token endpoint rejects credentials that you are sure are correct, try the other method before suspecting the credentials.
+
+The components are form-urlencoded before being joined and base64-encoded, which is what keeps a secret containing `:` unambiguous.
+
+### Non-OAuth2 mint endpoints (`requestFormat: json`)
+
+Not every "give me a token" endpoint is an OAuth2 token endpoint. Some take a JSON body and return the token under their own field name. `requestFormat: json` covers those:
+
+```hcl
+configuration = jsonencode({
+  cacheResource = "cache-global"
+  tokenEndpoint = "https://example.internal/api/public/generatetoken"
+  requestFormat = "json"
+  tokenPath     = "accessToken"
+  parameters = {
+    username = "{#api.properties['svc-user']}"
+    password = "{#api.properties['svc-password']}"
+  }
+  cacheKey   = "example-service-token"
+  maxTtl     = 3600
+})
+```
+
+In `json` mode the body is built from `parameters` **alone** — no `grant_type`, no client credentials are added implicitly, because those are OAuth2 concepts the endpoint may not recognise. Anything the endpoint needs goes in `parameters` verbatim. Values are serialised by Jackson, so quotes and backslashes in a resolved value cannot break out of their JSON string.
+
+`clientAuthMethod` still applies in `json` mode — it is a header concern, independent of the body format.
+
+### Bounding the TTL (`maxTtl`)
+
+TTL is normally derived from the response: `expires_in`, else the token's own JWT `exp` claim, else `defaultTtl`. That is the right default, but it ties the cache lifetime to the token's lifetime.
+
+Set `maxTtl` when the provider issues a **long-lived** token whose underlying credential can be rotated. Without a bound, a 24-hour token is cached for 24 hours, so rotating the password behind it has no effect until that token finally expires. With `maxTtl = 3600` the token is still valid when served (the bound only ever shortens the cached lifetime) and a rotation takes effect within the hour.
 
 ### Error template attributes
 
