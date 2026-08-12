@@ -78,7 +78,10 @@ There is no guard rail at deploy time: dropping a 2.x ZIP into `plugins-ext/` on
 
 - The policy is **V4 reactive only**. It implements `io.gravitee.gateway.reactive.api.policy.Policy` and returns a `Completable` from `onRequest(HttpExecutionContext)`. There is no V2 (`@OnRequest`) code path. Do not reintroduce one unless a deployment target actually requires it.
 - Caching is delegated entirely to a Gravitee `CacheResource` — there is no in-process fallback map. The cache resource is mandatory; the policy returns 500 if it is missing.
-- TTL is derived from the OAuth2 response (`expires_in`) or, failing that, the JWT `exp` claim. `defaultTtl` is the last-resort fallback.
+- TTL is derived from the OAuth2 response (`expires_in`) or, failing that, the JWT `exp` claim. `defaultTtl` is the last-resort fallback, and `maxTtl` (when > 0) bounds whatever came out of that chain. The bound only ever shortens a TTL, so it cannot cause an expired token to be served.
+- The request body is form-encoded by default and JSON under `requestFormat: json`, where it is built from `parameters` alone — no `grant_type` or client credentials are added implicitly, since a JSON mint endpoint is not an OAuth2 token endpoint. `clientAuthMethod` is orthogonal to the body format: it decides only whether credentials go in the body or an `Authorization: Basic` header.
+- `Content-Length` must be the **UTF-8 byte** length, not `String.length()`. Form bodies are percent-encoded and therefore ASCII, so the two agreed until JSON bodies arrived; with a multi-byte value a character count silently truncates the body server-side.
+- The token is read from the response at `tokenPath` (default `access_token`), walked as plain dot-separated field names. Deliberately not JSONPath — no array indexing, no filters, no extra dependency.
 - The default `cacheKey` expression is `{#context.attributes['jwt.claims']['sub']}`. When that expression fails to resolve, the policy isolates per-user by hashing the inbound `Authorization` header — relevant for KEY_LESS plans where there is no JWT plugin upstream.
 
 ### This major requires APIM >= 4.12 (Vert.x 5)

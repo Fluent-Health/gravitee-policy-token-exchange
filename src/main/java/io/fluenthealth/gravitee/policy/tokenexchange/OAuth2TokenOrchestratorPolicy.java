@@ -130,7 +130,14 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
 
     private Single<TokenInfo> requestToken(HttpPlainExecutionContext ctx) {
         var endpoint = resolveValue(ctx, configuration.getTokenEndpoint());
-        var body = buildFormBody(ctx);
+        var json = configuration.usesJsonRequestFormat();
+        var body = json ? buildJsonBody(ctx) : buildFormBody(ctx);
+        var contentType = json ? "application/json" : "application/x-www-form-urlencoded";
+        // Byte length, not String.length(): a form body is percent-encoded and therefore ASCII, but a
+        // JSON body carries raw UTF-8, where one character can be several bytes. Sending the
+        // character count as Content-Length truncates the body server-side.
+        var contentLength = String.valueOf(body.getBytes(StandardCharsets.UTF_8).length);
+        var basicAuth = buildBasicAuthHeader(ctx);
         var traceparent = ctx.request().headers().get("traceparent");
 
         return Single.create(emitter -> {
@@ -154,8 +161,11 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
                 .request(options)
                 .onFailure(emitter::onError)
                 .onSuccess(req -> {
-                    req.putHeader("Content-Type", "application/x-www-form-urlencoded");
-                    req.putHeader("Content-Length", String.valueOf(body.length()));
+                    req.putHeader("Content-Type", contentType);
+                    req.putHeader("Content-Length", contentLength);
+                    if (basicAuth != null) {
+                        req.putHeader(AUTHORIZATION, basicAuth);
+                    }
                     if (traceparent != null) {
                         req.putHeader("traceparent", traceparent);
                     }
@@ -174,9 +184,9 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
                                     }
                                     try {
                                         var node = MAPPER.readTree(responseBody);
-                                        var accessToken = node.path("access_token").asText(null);
+                                        var accessToken = extractToken(node);
                                         if (accessToken == null) {
-                                            emitter.onError(new RuntimeException("Missing access_token in IDP response"));
+                                            emitter.onError(new RuntimeException("Missing " + tokenPath() + " in IDP response"));
                                             return;
                                         }
                                         emitter.onSuccess(new TokenInfo(accessToken, extractTtl(node, accessToken)));
@@ -189,7 +199,39 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
         });
     }
 
-    private int extractTtl(JsonNode node, String accessToken) {
+    /** Configured token path, defaulted. A leading {@code $.} is accepted and ignored. */
+    private String tokenPath() {
+        var path = configuration.getTokenPath();
+        if (path == null || path.isBlank()) {
+            return OAuth2TokenOrchestratorPolicyConfiguration.DEFAULT_TOKEN_PATH;
+        }
+        return path.startsWith("$.") ? path.substring(2) : path;
+    }
+
+    /**
+     * Reads the token out of the response by walking dot-separated field names — {@code access_token},
+     * {@code accessToken}, {@code data.token}. Deliberately not JSONPath: no array indexing, no
+     * filters, no extra dependency, and every token endpoint met so far returns the token at a fixed
+     * field.
+     */
+    String extractToken(JsonNode node) {
+        var cursor = node;
+        for (var segment : tokenPath().split("\\.")) {
+            if (segment.isEmpty()) {
+                continue;
+            }
+            cursor = cursor.path(segment);
+        }
+        return cursor.isValueNode() ? cursor.asText(null) : null;
+    }
+
+    int extractTtl(JsonNode node, String accessToken) {
+        var ttl = deriveTtl(node, accessToken);
+        var max = configuration.getMaxTtl();
+        return max > 0 ? Math.min(ttl, max) : ttl;
+    }
+
+    private int deriveTtl(JsonNode node, String accessToken) {
         if (node.has("expires_in")) {
             return node.get("expires_in").asInt();
         }
@@ -221,16 +263,22 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
         }
     }
 
-    private String buildFormBody(HttpPlainExecutionContext ctx) {
+    String buildFormBody(HttpPlainExecutionContext ctx) {
         var params = new LinkedHashMap<String, String>();
-        params.put("grant_type", configuration.getGrantType());
+        if (configuration.getGrantType() != null) {
+            params.put("grant_type", configuration.getGrantType());
+        }
 
         var engine = ctx.getTemplateEngine();
-        if (configuration.getClientId() != null) {
-            params.put("client_id", engine.getValue(configuration.getClientId(), String.class));
-        }
-        if (configuration.getClientSecret() != null) {
-            params.put("client_secret", engine.getValue(configuration.getClientSecret(), String.class));
+        // Under client_secret_basic the credentials travel in the Authorization header instead, and
+        // RFC 6749 §2.3.1 is explicit that a client using one method must not use the other.
+        if (!configuration.usesClientSecretBasic()) {
+            if (configuration.getClientId() != null) {
+                params.put("client_id", engine.getValue(configuration.getClientId(), String.class));
+            }
+            if (configuration.getClientSecret() != null) {
+                params.put("client_secret", engine.getValue(configuration.getClientSecret(), String.class));
+            }
         }
         if (configuration.getParameters() != null) {
             configuration.getParameters().forEach((k, v) -> params.put(k, engine.getValue(v, String.class)));
@@ -241,6 +289,44 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
             .stream()
             .map(e -> encode(e.getKey()) + "=" + (e.getValue() != null ? encode(e.getValue()) : ""))
             .collect(Collectors.joining("&"));
+    }
+
+    /**
+     * Builds a JSON object body from {@code parameters} alone.
+     *
+     * <p>Nothing is added implicitly — no {@code grant_type}, no client credentials. A JSON mint
+     * endpoint is not an OAuth2 token endpoint and has its own field names, so anything it needs in
+     * the body goes in {@code parameters} verbatim. Credentials still work through
+     * {@code clientAuthMethod}, which is a header concern and orthogonal to the body format.
+     *
+     * <p>Serialised by Jackson rather than string-concatenated so that quotes, backslashes and
+     * control characters in a resolved value cannot break out of their JSON string.
+     */
+    String buildJsonBody(HttpPlainExecutionContext ctx) {
+        var engine = ctx.getTemplateEngine();
+        var body = MAPPER.createObjectNode();
+        if (configuration.getParameters() != null) {
+            configuration.getParameters().forEach((k, v) -> body.put(k, v == null ? null : engine.getValue(v, String.class)));
+        }
+        return body.toString();
+    }
+
+    /**
+     * {@code Authorization: Basic base64(urlencode(id) ":" urlencode(secret))}, or null when
+     * credentials belong in the body.
+     *
+     * <p>The components are form-urlencoded before being joined and encoded, per RFC 6749 §2.3.1 —
+     * that is what keeps a secret containing {@code :} unambiguous.
+     */
+    String buildBasicAuthHeader(HttpPlainExecutionContext ctx) {
+        if (!configuration.usesClientSecretBasic()) {
+            return null;
+        }
+        var engine = ctx.getTemplateEngine();
+        var id = configuration.getClientId() == null ? "" : engine.getValue(configuration.getClientId(), String.class);
+        var secret = configuration.getClientSecret() == null ? "" : engine.getValue(configuration.getClientSecret(), String.class);
+        var credentials = encode(id == null ? "" : id) + ":" + encode(secret == null ? "" : secret);
+        return "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
     }
 
     private static String encode(String v) {

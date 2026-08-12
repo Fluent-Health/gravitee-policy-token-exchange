@@ -5,6 +5,19 @@ import java.util.Map;
 
 public class OAuth2TokenOrchestratorPolicyConfiguration implements PolicyConfiguration {
 
+    /** {@code form} sends {@code application/x-www-form-urlencoded}; {@code json} sends a JSON object. */
+    public static final String FORMAT_FORM = "form";
+
+    public static final String FORMAT_JSON = "json";
+
+    /** Credentials in the request body (RFC 6749 §2.3.1 "client_secret_post"). */
+    public static final String AUTH_CLIENT_SECRET_POST = "client_secret_post";
+
+    /** Credentials in an {@code Authorization: Basic} header (RFC 6749 §2.3.1 "client_secret_basic"). */
+    public static final String AUTH_CLIENT_SECRET_BASIC = "client_secret_basic";
+
+    public static final String DEFAULT_TOKEN_PATH = "access_token";
+
     private String cacheResource;
     private String tokenEndpoint;
     private String grantType;
@@ -15,6 +28,19 @@ public class OAuth2TokenOrchestratorPolicyConfiguration implements PolicyConfigu
     private int errorStatusCode = 401;
     private String errorContent = "{\"message\": \"Token exchange failed\"}";
     private Map<String, String> parameters;
+    private String clientAuthMethod = AUTH_CLIENT_SECRET_POST;
+    private String requestFormat = FORMAT_FORM;
+    private String tokenPath = DEFAULT_TOKEN_PATH;
+
+    /**
+     * Upper bound on the cache TTL, in seconds. {@code 0} (the default) means no bound, leaving the
+     * TTL exactly as derived from the response.
+     *
+     * <p>Worth setting when the provider issues a long-lived token but the credential behind it can
+     * be rotated: the derived TTL follows the token's own lifetime, so without a bound a rotated
+     * secret stays unused until the cached token finally expires.
+     */
+    private int maxTtl = 0;
 
     public String getCacheResource() {
         return cacheResource;
@@ -94,5 +120,47 @@ public class OAuth2TokenOrchestratorPolicyConfiguration implements PolicyConfigu
 
     public void setParameters(Map<String, String> parameters) {
         this.parameters = parameters;
+    }
+
+    public String getClientAuthMethod() {
+        return clientAuthMethod;
+    }
+
+    public void setClientAuthMethod(String clientAuthMethod) {
+        this.clientAuthMethod = clientAuthMethod;
+    }
+
+    public String getRequestFormat() {
+        return requestFormat;
+    }
+
+    public void setRequestFormat(String requestFormat) {
+        this.requestFormat = requestFormat;
+    }
+
+    public String getTokenPath() {
+        return tokenPath;
+    }
+
+    public void setTokenPath(String tokenPath) {
+        this.tokenPath = tokenPath;
+    }
+
+    public int getMaxTtl() {
+        return maxTtl;
+    }
+
+    public void setMaxTtl(int maxTtl) {
+        this.maxTtl = maxTtl;
+    }
+
+    /** True when credentials belong in an {@code Authorization: Basic} header rather than the body. */
+    public boolean usesClientSecretBasic() {
+        return AUTH_CLIENT_SECRET_BASIC.equalsIgnoreCase(clientAuthMethod);
+    }
+
+    /** True when the token request body is a JSON object rather than a form encoding. */
+    public boolean usesJsonRequestFormat() {
+        return FORMAT_JSON.equalsIgnoreCase(requestFormat);
     }
 }
