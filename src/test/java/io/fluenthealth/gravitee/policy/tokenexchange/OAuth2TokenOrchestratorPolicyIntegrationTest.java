@@ -10,6 +10,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -26,6 +27,8 @@ import io.gravitee.resource.cache.api.Cache;
 import io.gravitee.resource.cache.api.CacheResource;
 import io.gravitee.resource.cache.api.Element;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import java.nio.charset.StandardCharsets;
@@ -46,7 +49,6 @@ import org.mockito.quality.Strictness;
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 @WireMockTest(httpPort = 8089)
-@SuppressWarnings({ "deprecation", "removal" })
 class OAuth2TokenOrchestratorPolicyIntegrationTest {
 
     @Mock
@@ -89,7 +91,8 @@ class OAuth2TokenOrchestratorPolicyIntegrationTest {
         when(ctx.request()).thenReturn(request);
         when(request.headers()).thenReturn(headers);
         when(ctx.getTemplateEngine()).thenReturn(templateEngine);
-        when(templateEngine.getValue(any(String.class), eq(String.class))).thenAnswer(inv -> inv.getArgument(0));
+        // eval, not getValue: the synchronous entry points cannot resolve a deferred value.
+        when(templateEngine.<String>eval(any(String.class), eq(String.class))).thenAnswer(inv -> Maybe.just(inv.getArgument(0)));
         when(ctx.getComponent(ResourceManager.class)).thenReturn(resourceManager);
         when(ctx.getComponent(HttpClient.class)).thenReturn(httpClient);
         when(resourceManager.getResource("test-cache", CacheResource.class)).thenReturn((CacheResource) cacheResource);
@@ -297,6 +300,117 @@ class OAuth2TokenOrchestratorPolicyIntegrationTest {
         var captor = ArgumentCaptor.forClass(Element.class);
         verify(cache).put(captor.capture());
         assertThat(captor.getValue().timeToLive()).isEqualTo(60);
+    }
+
+    // ── Deferred (asynchronous) template values ──────────────────────────────
+
+    /**
+     * The expression a secret provider answers. Nothing here parses it — the stub below matches on
+     * it verbatim — but using the real shape keeps the point of these tests obvious.
+     */
+    private static final String CLIENT_ID_REF = "{#secrets.get('/gcp/idp-credentials:client_id')}";
+    private static final String CLIENT_SECRET_REF = "{#secrets.get('/gcp/idp-credentials:client_secret')}";
+
+    /**
+     * Stands in for a secret provider: the listed expressions resolve to a value that only arrives
+     * later, on another thread, exactly as a lookup against a remote secret store does.
+     *
+     * <p>This is the case {@code TemplateEngine.eval} exists for, and the one every synchronous
+     * entry point fails at — silently, by handing back the expression string itself. Any expression
+     * not listed resolves to itself, so literal configuration keeps behaving as before.
+     */
+    private void stubDeferredValues(Map<String, String> deferred) {
+        when(templateEngine.<String>eval(any(String.class), eq(String.class))).thenAnswer(inv -> {
+            String expression = inv.getArgument(0);
+            var value = deferred.get(expression);
+            return value == null
+                ? Maybe.just(expression)
+                : Single.just(value).delay(50, TimeUnit.MILLISECONDS).toMaybe();
+        });
+    }
+
+    @Test
+    void resolvesDeferredCredentialsIntoTheFormBody() {
+        stubToken("{\"access_token\":\"t\",\"expires_in\":60}");
+        stubDeferredValues(Map.of(CLIENT_ID_REF, "real-id", CLIENT_SECRET_REF, "real-secret"));
+        configuration.setClientId(CLIENT_ID_REF);
+        configuration.setClientSecret(CLIENT_SECRET_REF);
+
+        policy.onRequest(ctx).test().awaitDone(5, TimeUnit.SECONDS).assertComplete().assertNoErrors();
+
+        // The resolved values, not the expressions — the whole point.
+        WireMock.verify(
+            postRequestedFor(urlEqualTo("/token"))
+                .withRequestBody(equalTo("grant_type=token_exchange&client_id=real-id&client_secret=real-secret"))
+        );
+    }
+
+    @Test
+    void resolvesADeferredParameterIntoTheJsonBody() {
+        stubToken("{\"accessToken\":\"minted\"}");
+        stubDeferredValues(Map.of(CLIENT_SECRET_REF, "real-secret"));
+        configuration.setRequestFormat("json");
+        configuration.setTokenPath("accessToken");
+        configuration.setParameters(new LinkedHashMap<>(Map.of("password", CLIENT_SECRET_REF)));
+
+        policy.onRequest(ctx).test().awaitDone(5, TimeUnit.SECONDS).assertComplete().assertNoErrors();
+
+        assertThat(headers.get("Authorization")).isEqualTo("Bearer minted");
+        WireMock.verify(postRequestedFor(urlEqualTo("/token")).withRequestBody(equalToJson("{\"password\":\"real-secret\"}")));
+    }
+
+    @Test
+    void resolvesDeferredCredentialsIntoTheBasicAuthHeader() {
+        stubToken("{\"access_token\":\"t\",\"expires_in\":60}");
+        stubDeferredValues(Map.of(CLIENT_ID_REF, "real-id", CLIENT_SECRET_REF, "real-secret"));
+        configuration.setClientAuthMethod("client_secret_basic");
+        configuration.setClientId(CLIENT_ID_REF);
+        configuration.setClientSecret(CLIENT_SECRET_REF);
+
+        policy.onRequest(ctx).test().awaitDone(5, TimeUnit.SECONDS).assertComplete().assertNoErrors();
+
+        var expected = "Basic " + Base64.getEncoder().encodeToString("real-id:real-secret".getBytes(StandardCharsets.UTF_8));
+        WireMock.verify(
+            postRequestedFor(urlEqualTo("/token"))
+                .withHeader("Authorization", equalTo(expected))
+                .withRequestBody(equalTo("grant_type=token_exchange"))
+        );
+    }
+
+    /**
+     * A deferred cache key resolves too, rather than falling through to the Authorization-header
+     * hash — the fallback would still isolate users, so a regression here would be invisible.
+     */
+    @Test
+    void resolvesADeferredCacheKey() {
+        stubToken("{\"access_token\":\"t\",\"expires_in\":60}");
+        stubDeferredValues(Map.of("{#context.attributes['jwt.claims']['sub']}", "user-42"));
+
+        policy.onRequest(ctx).test().awaitDone(5, TimeUnit.SECONDS).assertComplete().assertNoErrors();
+
+        var captor = ArgumentCaptor.forClass(Element.class);
+        verify(cache).put(captor.capture());
+        assertThat(captor.getValue().key()).isEqualTo("user-42");
+    }
+
+    /**
+     * The regression guard for the bug this all exists to prevent. Every synchronous entry point
+     * returns the literal expression for a deferred variable and reports nothing, so a single
+     * stray call is enough to send {@code {#secrets.get(...)}} upstream as the credential.
+     */
+    @Test
+    @SuppressWarnings({ "deprecation", "removal" })
+    void neverResolvesThroughASynchronousEntryPoint() {
+        stubToken("{\"access_token\":\"t\",\"expires_in\":60}");
+        configuration.setClientAuthMethod("client_secret_basic");
+        configuration.setClientId(CLIENT_ID_REF);
+        configuration.setClientSecret(CLIENT_SECRET_REF);
+        configuration.setParameters(new LinkedHashMap<>(Map.of("scope", "api.read")));
+
+        policy.onRequest(ctx).test().awaitDone(5, TimeUnit.SECONDS).assertComplete().assertNoErrors();
+
+        verify(templateEngine, never()).getValue(any(), any());
+        verify(templateEngine, never()).convert(any());
     }
 
     private void stubToken(String responseBody) {
