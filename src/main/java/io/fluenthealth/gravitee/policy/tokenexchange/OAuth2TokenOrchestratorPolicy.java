@@ -11,6 +11,7 @@ import io.gravitee.resource.cache.api.Cache;
 import io.gravitee.resource.cache.api.CacheResource;
 import io.gravitee.resource.cache.api.Element;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
@@ -18,10 +19,12 @@ import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.RequestOptions;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,13 +35,6 @@ import org.slf4j.LoggerFactory;
  * Gravitee {@link CacheResource}. Cache TTL is derived from the OAuth2 response (the
  * {@code expires_in} field or, failing that, the JWT {@code exp} claim).
  */
-// TemplateEngine.getValue is deprecated in newer EL releases (replaced by evalNow). gateway-api
-// 6.3.0 still pulls gravitee-expression-language 3.2.1 transitively, which does not expose
-// evalNow, so getValue remains the only non-reactive option at compile time — the alternative is
-// the reactive Maybe<T> eval(...). Note the APIM 4.12 runtime actually ships EL 4.4.0, so
-// switching would mean declaring EL explicitly as a `provided` dependency rather than inheriting
-// it; the ITs confirm getValue still resolves against the 4.4.0 runtime.
-@SuppressWarnings({ "deprecation", "removal" })
 public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
 
     private static final Logger log = LoggerFactory.getLogger(OAuth2TokenOrchestratorPolicy.class);
@@ -74,34 +70,89 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
             }
 
             var cache = cacheResource.getCache(ctx);
-            var cacheKey = resolveCacheKey(ctx);
-            var cached = cache.get(cacheKey);
-            if (cached != null && cached.value() != null) {
-                log.debug("Cache hit for key [{}]", cacheKey);
-                ctx.request().headers().set(AUTHORIZATION, BEARER_PREFIX + cached.value());
-                return Completable.complete();
-            }
+            return resolveCacheKey(ctx).flatMapCompletable(cacheKey -> {
+                var cached = cache.get(cacheKey);
+                if (cached != null && cached.value() != null) {
+                    log.debug("Cache hit for key [{}]", cacheKey);
+                    ctx.request().headers().set(AUTHORIZATION, BEARER_PREFIX + cached.value());
+                    return Completable.complete();
+                }
 
-            log.debug("Cache miss for key [{}]", cacheKey);
-            return doExchange(ctx, cache, cacheKey);
+                log.debug("Cache miss for key [{}]", cacheKey);
+                return doExchange(ctx, cache, cacheKey);
+            });
         });
     }
 
-    private String resolveCacheKey(HttpPlainExecutionContext ctx) {
-        var expression = configuration.getCacheKey();
-        if (expression != null && !expression.isEmpty()) {
-            try {
-                var resolved = ctx.getTemplateEngine().getValue(expression, String.class);
-                if (resolved != null && !resolved.isEmpty()) {
-                    return resolved;
-                }
-            } catch (Exception e) {
-                log.debug("Failed to resolve cache key expression [{}]: {}", expression, e.toString());
-            }
+    // ── Expression resolution ─────────────────────────────────────────────────
+
+    /**
+     * Evaluates a template expression — and the only place this policy is allowed to do so.
+     *
+     * <p>{@code TemplateEngine.eval} is the sole entry point that resolves <em>deferred</em>
+     * variables: ones whose value is produced asynchronously, as a secret-provider lookup is. The
+     * synchronous entry points do not. {@code getValue} is deprecated and blocking, {@code convert}
+     * delegates to it, and {@code evalNow} is documented as not supporting deferred variables — and
+     * none of them report the problem. A deferred reference simply comes back as the literal
+     * expression string, which for {@code clientSecret} means the text {@code {#secrets.get(...)}}
+     * reaches the IDP as the credential.
+     *
+     * <p>An empty {@link Maybe} means "no value": either nothing was configured, or the expression
+     * resolved to null. What that means is the caller's decision — see {@link #resolve} and
+     * {@link #resolveOrLiteral}.
+     */
+    private static Maybe<String> evaluate(HttpPlainExecutionContext ctx, String expression) {
+        if (expression == null) {
+            return Maybe.empty();
         }
+        // defer: an engine that rejects a malformed expression throws out of eval itself rather
+        // than signalling it, and that has to become an onError rather than escaping assembly.
+        return Maybe.defer(() -> ctx.getTemplateEngine().eval(expression, String.class));
+    }
+
+    /**
+     * Strict resolution: a failure propagates and fails the exchange. Used for credentials and
+     * request parameters, where substituting anything for the resolved value is the whole bug.
+     */
+    private static Single<Optional<String>> resolve(HttpPlainExecutionContext ctx, String expression) {
+        return evaluate(ctx, expression).map(Optional::of).defaultIfEmpty(Optional.empty());
+    }
+
+    /**
+     * Lenient resolution: on failure the expression stands as its own literal value. Applies to the
+     * token endpoint and the error content — ordinarily plain strings, and neither a credential.
+     */
+    private static Single<Optional<String>> resolveOrLiteral(HttpPlainExecutionContext ctx, String expression) {
+        return evaluate(ctx, expression)
+            .onErrorResumeNext(e -> Maybe.just(expression))
+            .map(Optional::of)
+            .defaultIfEmpty(Optional.empty());
+    }
+
+    private Single<String> resolveCacheKey(HttpPlainExecutionContext ctx) {
+        var expression = configuration.getCacheKey();
+        if (expression == null || expression.isEmpty()) {
+            return Single.fromCallable(() -> fallbackCacheKey(ctx));
+        }
+        return evaluate(ctx, expression)
+            .onErrorResumeNext(e -> {
+                log.debug("Failed to resolve cache key expression [{}]: {}", expression, e.toString());
+                return Maybe.empty();
+            })
+            .filter(resolved -> !resolved.isEmpty())
+            .switchIfEmpty(Single.fromCallable(() -> fallbackCacheKey(ctx)));
+    }
+
+    /**
+     * Per-user isolation for when the cache key expression yields nothing — relevant on KEY_LESS
+     * plans, where no JWT plugin runs upstream to populate {@code jwt.claims}.
+     */
+    private String fallbackCacheKey(HttpPlainExecutionContext ctx) {
         var authHeader = ctx.request().headers().get(AUTHORIZATION);
         return authHeader != null ? "u_" + Integer.toHexString(authHeader.hashCode()) : "anon_token";
     }
+
+    // ── Exchange ──────────────────────────────────────────────────────────────
 
     private Completable doExchange(HttpPlainExecutionContext ctx, Cache cache, String cacheKey) {
         return Single
@@ -116,11 +167,12 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
                 if (t instanceof TokenExchangeException te) {
                     log.warn("Token exchange failed: status={}, body={}", te.statusCode, te.responseBody);
                     // Expose IDP response to the errorContent template so callers can build
-                    // detailed messages, mirroring policy-http-callout's #calloutResponse.*
+                    // detailed messages, mirroring policy-http-callout's #calloutResponse.* — which
+                    // means the attributes have to be in place before errorContent is resolved.
                     ctx.putAttribute(ATTR_RESPONSE_STATUS, te.statusCode);
                     ctx.putAttribute(ATTR_RESPONSE_CONTENT, te.responseBody);
-                    return ctx.interruptWith(
-                        new ExecutionFailure(configuration.getErrorStatusCode()).message(resolveValue(ctx, configuration.getErrorContent()))
+                    return resolveOrLiteral(ctx, configuration.getErrorContent()).flatMapCompletable(message ->
+                        ctx.interruptWith(new ExecutionFailure(configuration.getErrorStatusCode()).message(message.orElse(null)))
                     );
                 }
                 log.warn("Token exchange failed: {}", t.toString());
@@ -128,22 +180,37 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
             });
     }
 
+    /**
+     * Resolves everything the token request needs, then sends it.
+     *
+     * <p>Endpoint, body and Basic header are gathered as a unit because any of them may sit behind
+     * a deferred value; only once all three have arrived is there a request to send.
+     */
     private Single<TokenInfo> requestToken(HttpPlainExecutionContext ctx) {
-        var endpoint = resolveValue(ctx, configuration.getTokenEndpoint());
         var json = configuration.usesJsonRequestFormat();
-        var body = json ? buildJsonBody(ctx) : buildFormBody(ctx);
         var contentType = json ? "application/json" : "application/x-www-form-urlencoded";
+        return Single
+            .zip(
+                resolveOrLiteral(ctx, configuration.getTokenEndpoint()),
+                json ? buildJsonBody(ctx) : buildFormBody(ctx),
+                buildBasicAuthHeader(ctx).map(Optional::of).defaultIfEmpty(Optional.empty()),
+                TokenRequest::new
+            )
+            .flatMap(tokenRequest -> send(ctx, tokenRequest, contentType));
+    }
+
+    private Single<TokenInfo> send(HttpPlainExecutionContext ctx, TokenRequest tokenRequest, String contentType) {
+        var body = tokenRequest.body();
         // Byte length, not String.length(): a form body is percent-encoded and therefore ASCII, but a
         // JSON body carries raw UTF-8, where one character can be several bytes. Sending the
         // character count as Content-Length truncates the body server-side.
         var contentLength = String.valueOf(body.getBytes(StandardCharsets.UTF_8).length);
-        var basicAuth = buildBasicAuthHeader(ctx);
         var traceparent = ctx.request().headers().get("traceparent");
 
         return Single.create(emitter -> {
             URI uri;
             try {
-                uri = URI.create(endpoint);
+                uri = URI.create(tokenRequest.endpoint().orElse(null));
             } catch (Exception e) {
                 emitter.onError(e);
                 return;
@@ -163,9 +230,7 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
                 .onSuccess(req -> {
                     req.putHeader("Content-Type", contentType);
                     req.putHeader("Content-Length", contentLength);
-                    if (basicAuth != null) {
-                        req.putHeader(AUTHORIZATION, basicAuth);
-                    }
+                    tokenRequest.basicAuth().ifPresent(basicAuth -> req.putHeader(AUTHORIZATION, basicAuth));
                     if (traceparent != null) {
                         req.putHeader("traceparent", traceparent);
                     }
@@ -252,43 +317,44 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
         return configuration.getDefaultTtl();
     }
 
-    private String resolveValue(HttpPlainExecutionContext ctx, String expression) {
-        if (expression == null) {
-            return null;
-        }
-        try {
-            return ctx.getTemplateEngine().getValue(expression, String.class);
-        } catch (Exception e) {
-            return expression;
-        }
-    }
+    // ── Request body and credentials ──────────────────────────────────────────
 
-    String buildFormBody(HttpPlainExecutionContext ctx) {
-        var params = new LinkedHashMap<String, String>();
+    Single<String> buildFormBody(HttpPlainExecutionContext ctx) {
+        // Keyed by field name in a LinkedHashMap, exactly as when the values were resolved inline:
+        // a `parameters` entry colliding with grant_type or a credential overwrites it in place
+        // rather than being emitted a second time.
+        var fields = new LinkedHashMap<String, Single<Optional<String>>>();
+
+        // grant_type is taken verbatim; it has never gone through the template engine.
         if (configuration.getGrantType() != null) {
-            params.put("grant_type", configuration.getGrantType());
+            fields.put("grant_type", Single.just(Optional.of(configuration.getGrantType())));
         }
-
-        var engine = ctx.getTemplateEngine();
         // Under client_secret_basic the credentials travel in the Authorization header instead, and
         // RFC 6749 §2.3.1 is explicit that a client using one method must not use the other.
         if (!configuration.usesClientSecretBasic()) {
             if (configuration.getClientId() != null) {
-                params.put("client_id", engine.getValue(configuration.getClientId(), String.class));
+                fields.put("client_id", resolve(ctx, configuration.getClientId()));
             }
             if (configuration.getClientSecret() != null) {
-                params.put("client_secret", engine.getValue(configuration.getClientSecret(), String.class));
+                fields.put("client_secret", resolve(ctx, configuration.getClientSecret()));
             }
         }
         if (configuration.getParameters() != null) {
-            configuration.getParameters().forEach((k, v) -> params.put(k, engine.getValue(v, String.class)));
+            configuration.getParameters().forEach((name, expression) -> fields.put(name, resolve(ctx, expression)));
         }
 
-        return params
-            .entrySet()
-            .stream()
-            .map(e -> encode(e.getKey()) + "=" + (e.getValue() != null ? encode(e.getValue()) : ""))
-            .collect(Collectors.joining("&"));
+        if (fields.isEmpty()) {
+            return Single.just("");
+        }
+        var names = List.copyOf(fields.keySet());
+        return zipResolved(fields.values(), values -> {
+            var pairs = new ArrayList<String>(names.size());
+            for (var i = 0; i < names.size(); i++) {
+                var value = values.get(i);
+                pairs.add(encode(names.get(i)) + "=" + (value != null ? encode(value) : ""));
+            }
+            return String.join("&", pairs);
+        });
     }
 
     /**
@@ -302,36 +368,63 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
      * <p>Serialised by Jackson rather than string-concatenated so that quotes, backslashes and
      * control characters in a resolved value cannot break out of their JSON string.
      */
-    String buildJsonBody(HttpPlainExecutionContext ctx) {
-        var engine = ctx.getTemplateEngine();
-        var body = MAPPER.createObjectNode();
-        if (configuration.getParameters() != null) {
-            configuration.getParameters().forEach((k, v) -> body.put(k, v == null ? null : engine.getValue(v, String.class)));
+    Single<String> buildJsonBody(HttpPlainExecutionContext ctx) {
+        var parameters = configuration.getParameters();
+        if (parameters == null || parameters.isEmpty()) {
+            return Single.fromCallable(() -> MAPPER.createObjectNode().toString());
         }
-        return body.toString();
+        var names = List.copyOf(parameters.keySet());
+        var resolvers = parameters.values().stream().map(expression -> resolve(ctx, expression)).toList();
+        return zipResolved(resolvers, values -> {
+            var body = MAPPER.createObjectNode();
+            for (var i = 0; i < names.size(); i++) {
+                body.put(names.get(i), values.get(i));
+            }
+            return body.toString();
+        });
     }
 
     /**
-     * {@code Authorization: Basic base64(urlencode(id) ":" urlencode(secret))}, or null when
+     * {@code Authorization: Basic base64(urlencode(id) ":" urlencode(secret))}, or empty when
      * credentials belong in the body.
      *
      * <p>The components are form-urlencoded before being joined and encoded, per RFC 6749 §2.3.1 —
      * that is what keeps a secret containing {@code :} unambiguous.
      */
-    String buildBasicAuthHeader(HttpPlainExecutionContext ctx) {
+    Maybe<String> buildBasicAuthHeader(HttpPlainExecutionContext ctx) {
         if (!configuration.usesClientSecretBasic()) {
-            return null;
+            return Maybe.empty();
         }
-        var engine = ctx.getTemplateEngine();
-        var id = configuration.getClientId() == null ? "" : engine.getValue(configuration.getClientId(), String.class);
-        var secret = configuration.getClientSecret() == null ? "" : engine.getValue(configuration.getClientSecret(), String.class);
-        var credentials = encode(id == null ? "" : id) + ":" + encode(secret == null ? "" : secret);
-        return "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+        return Single
+            .zip(resolve(ctx, configuration.getClientId()), resolve(ctx, configuration.getClientSecret()), (id, secret) -> {
+                var credentials = encode(id.orElse("")) + ":" + encode(secret.orElse(""));
+                return "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+            })
+            .toMaybe();
+    }
+
+    /**
+     * Awaits an ordered set of resolutions and hands the combiner a same-order list, in which an
+     * element is null when that expression resolved to nothing — which is what a null meant on the
+     * synchronous path too.
+     */
+    private static <R> Single<R> zipResolved(Iterable<Single<Optional<String>>> resolvers, Function<List<String>, R> combiner) {
+        return Single.zip(resolvers, resolved -> {
+            var values = new ArrayList<String>(resolved.length);
+            for (var element : resolved) {
+                @SuppressWarnings("unchecked")
+                var value = (Optional<String>) element;
+                values.add(value.orElse(null));
+            }
+            return combiner.apply(values);
+        });
     }
 
     private static String encode(String v) {
         return java.net.URLEncoder.encode(v, StandardCharsets.UTF_8);
     }
+
+    // ── HTTP client ───────────────────────────────────────────────────────────
 
     private HttpClient getHttpClient(HttpPlainExecutionContext ctx) {
         var client = httpClient;
@@ -380,6 +473,9 @@ public class OAuth2TokenOrchestratorPolicy implements HttpPolicy {
     }
 
     private record TokenInfo(String accessToken, int ttl) {}
+
+    /** Everything the token POST needs, once every deferred value behind it has resolved. */
+    private record TokenRequest(Optional<String> endpoint, String body, Optional<String> basicAuth) {}
 
     private record CachedToken(Object key, Object value, int timeToLive) implements Element {}
 

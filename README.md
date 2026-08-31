@@ -140,7 +140,7 @@ resource "gravitee_api_v4" "refresh_api" {
 - `grantType`: The OAuth2 `grant_type` (e.g., `urn:ietf:params:oauth:grant-type:token-exchange`). Required for `requestFormat: form`; ignored for `json`.
 
 ### Optional Fields
-- `clientId`, `clientSecret`: Credentials, both EL-templated (e.g. `{#api.properties['client-id']}`).
+- `clientId`, `clientSecret`: Credentials, both EL-templated (e.g. `{#api.properties['client-id']}`, or a secret-provider reference — see [Expression values](#expression-values-including-asynchronous-ones)).
 - `clientAuthMethod` (default `client_secret_post`): How the credentials are presented — see [Client authentication](#client-authentication).
 - `requestFormat` (default `form`): Request body encoding — see [Non-OAuth2 mint endpoints](#non-oauth2-mint-endpoints-requestformat-json).
 - `tokenPath` (default `access_token`): Dot-separated path to the token in the response, e.g. `accessToken` or `data.token`. A leading `$.` is accepted and ignored. Not JSONPath — plain field names only.
@@ -150,6 +150,18 @@ resource "gravitee_api_v4" "refresh_api" {
 - `maxTtl` (default `0`, meaning unbounded): Upper bound on the cache TTL. See [Bounding the TTL](#bounding-the-ttl-maxttl).
 - `errorStatusCode` (default `401`): HTTP status returned to the gateway client when the provider rejects the exchange.
 - `errorContent` (default `{"message": "Token exchange failed"}`): Body returned with that status. Supports EL and has access to the provider response via two context attributes the policy sets before resolving the template (see below).
+
+### Expression values, including asynchronous ones
+
+Every templated field — `tokenEndpoint`, `clientId`, `clientSecret`, each `parameters` value, `cacheKey`, `errorContent` — is resolved through the gateway's expression language on the reactive path, so a value that arrives *asynchronously* resolves correctly. That matters for a secret provider, where the reference is a lookup rather than a lookup table:
+
+```hcl
+clientSecret = "{#secrets.get('/gcp/idp-credentials:client_secret')}"
+```
+
+The value is fetched per request (behind whatever caching the provider itself does), never stored in the API definition, and a rotation takes effect without redeploying the API.
+
+There is no configuration to turn on, and plain literals and ordinary in-memory expressions such as `{#api.properties['client-id']}` are unaffected. It is called out because the failure mode of getting it wrong is silent: a policy that resolves through one of the expression language's synchronous entry points gets the *expression string itself* back for an asynchronous variable, with no error anywhere, and sends `{#secrets.get('...')}` to the token endpoint as the credential. The endpoint answers `401`, which the policy reports as a `502`, and nothing in the logs points at the expression.
 
 ### Client authentication
 

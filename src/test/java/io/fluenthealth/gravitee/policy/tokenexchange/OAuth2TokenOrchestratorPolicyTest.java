@@ -18,6 +18,7 @@ import io.gravitee.resource.cache.api.Cache;
 import io.gravitee.resource.cache.api.CacheResource;
 import io.gravitee.resource.cache.api.Element;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,7 +29,6 @@ import org.mockito.quality.Strictness;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
-@SuppressWarnings({ "deprecation", "removal" })
 class OAuth2TokenOrchestratorPolicyTest {
 
     @Mock
@@ -69,7 +69,8 @@ class OAuth2TokenOrchestratorPolicyTest {
         when(request.headers()).thenReturn(headers);
         when(ctx.getComponent(ResourceManager.class)).thenReturn(resourceManager);
         when(ctx.getTemplateEngine()).thenReturn(templateEngine);
-        when(templateEngine.getValue(any(String.class), eq(String.class))).thenAnswer(inv -> inv.getArgument(0));
+        // eval, not getValue: the synchronous entry points cannot resolve a deferred value.
+        when(templateEngine.<String>eval(any(String.class), eq(String.class))).thenAnswer(inv -> Maybe.just(inv.getArgument(0)));
     }
 
     @Test

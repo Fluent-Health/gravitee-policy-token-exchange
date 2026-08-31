@@ -105,7 +105,12 @@ javap -c -p -cp target/classes io.fluenthealth.gravitee.policy.tokenexchange.OAu
   | grep -oE '(InterfaceMethod|Method) io/vertx/[^ ]*' | sort -u
 ```
 
-Note the compile/runtime split on the expression language: gateway-api 6.3.0 pulls EL **3.2.1** transitively, while the APIM 4.12 runtime ships EL **4.4.0**. `TemplateEngine.getValue` exists in both (the ITs prove it resolves at runtime); `evalNow` exists only in 4.2.0+, so using it would mean declaring EL explicitly as `provided` instead of inheriting it.
+Note the compile/runtime split on the expression language: gateway-api 6.3.0 pulls EL **3.2.1** transitively, while the APIM 4.12 runtime ships EL **4.4.0**. The policy resolves every expression through the one method whose descriptor is identical in both — `Maybe<T> eval(String, Class<T>)` — so EL stays inherited rather than declared `provided`. Re-check that after any APIM bump, the same way as the Vert.x descriptors:
+
+```bash
+javap -c -p -cp target/classes io.fluenthealth.gravitee.policy.tokenexchange.OAuth2TokenOrchestratorPolicy \
+  | grep -oE '(InterfaceMethod|Method) io/gravitee/el/[^ ]*' | sort -u
+```
 
 ## Repo conventions
 
